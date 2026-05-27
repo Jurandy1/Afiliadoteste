@@ -1,8 +1,14 @@
-# 🚀 AffiliateHub Pro
+# 🚀 Teste de afiliados
 
 Dashboard profissional de afiliados: **Shopee + Meta Ads + Pinterest**
 
 **Stack:** React + Vite + Firebase (Firestore + Storage) + Tailwind CSS + Chart.js
+
+---
+
+## 👤 Crédito
+
+Desenvolvido por **Jurandy** — 📱 WhatsApp: **(98) 98401-6496**
 
 ---
 
@@ -13,8 +19,8 @@ Dashboard profissional de afiliados: **Shopee + Meta Ads + Pinterest**
 ```bash
 git init
 git add .
-git commit -m "AffiliateHub Pro v1.0"
-git remote add origin https://github.com/SEU-USER/affiliatehub-pro.git
+git commit -m "Teste de afiliados v1.0"
+git remote add origin https://github.com/SEU-USER/afiliadoteste.git
 git push -u origin main
 ```
 

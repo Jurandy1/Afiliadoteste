@@ -270,7 +270,7 @@ export default function DashboardPage() {
                 className="border border-gray-200 rounded px-2 py-1 hover:bg-gray-50"
                 onClick={() => setSubSortDir((d) => (d === "asc" ? "desc" : "asc"))}
               >
-                {subSortDir === "asc" ? "Asc" : "Desc"}
+                {subSortDir === "asc" ? "Asc ↑" : "Desc ↓"}
               </button>
               <label className="flex items-center gap-1.5">
                 <input
@@ -301,13 +301,13 @@ export default function DashboardPage() {
               <thead>
                 <tr className="bg-gray-50 text-gray-500 uppercase text-[10px] tracking-wider">
                   <th className="text-left px-3 py-2">SubID</th>
-                  <th className="px-2 py-2 text-center">Comissão</th>
-                  <th className="px-2 py-2 text-center">Gasto</th>
-                  <th className="px-2 py-2 text-center">Lucro</th>
-                  <th className="px-2 py-2 text-center">ROI</th>
-                  <th className="px-2 py-2 text-center">Faturamento</th>
+                  <th className="px-2 py-2 text-center cursor-pointer hover:text-gray-700" onClick={() => { setSubSortField("comissoes"); setSubSortDir(subSortDir === "asc" && subSortField === "comissoes" ? "desc" : "asc"); }}>Comissão {subSortField === "comissoes" && (subSortDir === "asc" ? "↑" : "↓")}</th>
+                  <th className="px-2 py-2 text-center cursor-pointer hover:text-gray-700" onClick={() => { setSubSortField("gasto"); setSubSortDir(subSortDir === "asc" && subSortField === "gasto" ? "desc" : "asc"); }}>Gasto {subSortField === "gasto" && (subSortDir === "asc" ? "↑" : "↓")}</th>
+                  <th className="px-2 py-2 text-center cursor-pointer hover:text-gray-700" onClick={() => { setSubSortField("lucro"); setSubSortDir(subSortDir === "asc" && subSortField === "lucro" ? "desc" : "asc"); }}>Lucro {subSortField === "lucro" && (subSortDir === "asc" ? "↑" : "↓")}</th>
+                  <th className="px-2 py-2 text-center cursor-pointer hover:text-gray-700" onClick={() => { setSubSortField("roi"); setSubSortDir(subSortDir === "asc" && subSortField === "roi" ? "desc" : "asc"); }}>ROI {subSortField === "roi" && (subSortDir === "asc" ? "↑" : "↓")}</th>
+                  <th className="px-2 py-2 text-center cursor-pointer hover:text-gray-700" onClick={() => { setSubSortField("faturamento"); setSubSortDir(subSortDir === "asc" && subSortField === "faturamento" ? "desc" : "asc"); }}>Faturamento {subSortField === "faturamento" && (subSortDir === "asc" ? "↑" : "↓")}</th>
                   <th className="px-2 py-2 text-center">Ticket</th>
-                  <th className="px-2 py-2 text-center">Vendas</th>
+                  <th className="px-2 py-2 text-center cursor-pointer hover:text-gray-700" onClick={() => { setSubSortField("total_vendas"); setSubSortDir(subSortDir === "asc" && subSortField === "total_vendas" ? "desc" : "asc"); }}>Vendas {subSortField === "total_vendas" && (subSortDir === "asc" ? "↑" : "↓")}</th>
                   <th className="px-2 py-2 text-center">Diretas</th>
                   <th className="px-2 py-2 text-center">Indiretas</th>
                   <th className="px-2 py-2 text-center">Itens</th>
@@ -442,11 +442,11 @@ export default function DashboardPage() {
             <thead>
               <tr className="bg-gray-50 text-gray-500 uppercase text-[10px] tracking-wider">
                 <th className="text-left px-3 py-2">Produto</th>
-                <SortTh label="Comissão" field="comissao_concluida" sortField={sortField} onSort={handleSort} />
-                <SortTh label="Cliques" field="cliques" sortField={sortField} onSort={handleSort} />
-                <SortTh label="Vendas" field="vendas" sortField={sortField} onSort={handleSort} />
+                <SortTh label="Comissão" field="comissao_concluida" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                <SortTh label="Cliques" field="cliques" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                <SortTh label="Vendas" field="vendas" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
                 <th className="px-2 py-2">Conv.</th>
-                <SortTh label="ROI" field="roi" sortField={sortField} onSort={handleSort} />
+                <SortTh label="ROI" field="roi" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
                 <th className="px-2 py-2">Origem</th>
                 <th className="px-2 py-2">Status</th>
               </tr>
