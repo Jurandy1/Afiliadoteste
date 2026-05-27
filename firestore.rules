@@ -45,6 +45,13 @@ service cloud.firestore {
       allow update, delete: if true;
     }
 
+    // ── Vendas por SubID (agregado para dashboard) ────────────
+    match /subid_vendas/{subIdVendaId} {
+      allow read: if true;
+      allow create: if request.resource.data.keys().hasAny(['subid', 'comissoes', 'faturamento']);
+      allow update, delete: if true;
+    }
+
     // ── Meta Ads ────────────────────────────────────────────────
     match /meta_ads/{adId} {
       allow read: if true;

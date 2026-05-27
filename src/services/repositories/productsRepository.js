@@ -4,6 +4,40 @@ import {
 import { db } from "../firebase/client";
 import { COLLECTIONS } from "../firebase/firestore";
 
+// #region debug-point B:repo-reads
+const __dbg = (hypothesisId, msg, data = {}) =>
+  fetch("http://127.0.0.1:7777/event", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      sessionId: "firestore-permissions",
+      runId: "pre-fix",
+      hypothesisId,
+      location: "src/services/repositories/productsRepository.js",
+      msg: `[DEBUG] ${msg}`,
+      data,
+      ts: Date.now(),
+    }),
+  }).catch(() => {});
+
+// #region debug-point A-E:subid-mismatch-repo
+const __dbgSubIdMismatch = (hypothesisId, msg, data = {}) =>
+  fetch("http://127.0.0.1:7778/event", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      sessionId: "subid-mismatch",
+      runId: "pre-fix",
+      hypothesisId,
+      location: "src/services/repositories/productsRepository.js",
+      msg: `[DEBUG] ${msg}`,
+      data,
+      ts: Date.now(),
+    }),
+  }).catch(() => {});
+// #endregion
+// #endregion
+
 export async function getProdutos() {
   const snap = await getDocs(collection(db, COLLECTIONS.PRODUTOS));
   return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
@@ -19,8 +53,29 @@ export async function getCliques() {
 }
 
 export async function getSubIdVendas() {
-  const snap = await getDocs(collection(db, COLLECTIONS.SUBID_VENDAS));
-  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  // #region debug-point B:get-subid-vendas
+  __dbg("B", "getSubIdVendas.start", { collection: COLLECTIONS.SUBID_VENDAS });
+  __dbgSubIdMismatch("E", "getSubIdVendas.start", { collection: COLLECTIONS.SUBID_VENDAS });
+  try {
+    const snap = await getDocs(collection(db, COLLECTIONS.SUBID_VENDAS));
+    __dbg("B", "getSubIdVendas.success", { size: snap.size });
+    __dbgSubIdMismatch("E", "getSubIdVendas.success", {
+      size: snap.size,
+      sampleIds: snap.docs.slice(0, 5).map((d) => d.id),
+    });
+    return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  } catch (error) {
+    __dbg("B", "getSubIdVendas.error", {
+      code: error?.code || null,
+      message: String(error?.message || error || "unknown"),
+    });
+    __dbgSubIdMismatch("E", "getSubIdVendas.error", {
+      code: error?.code || null,
+      message: String(error?.message || error || "unknown"),
+    });
+    throw error;
+  }
+  // #endregion
 }
 
 export async function saveProductLink(produtoId, link_afiliado) {

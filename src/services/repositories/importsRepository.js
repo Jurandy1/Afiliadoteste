@@ -9,6 +9,23 @@ import { parseShopeeSalesRows } from "../parsers/shopeeSalesParser";
 import { normalizeSubId } from "../../utils/normalizeSubId";
 import { requireNonEmpty } from "../../utils/validators";
 
+// #region debug-point E:shopee-import-subid
+const __dbgSubIdImport = (hypothesisId, msg, data = {}) =>
+  fetch("http://127.0.0.1:7778/event", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      sessionId: "subid-mismatch",
+      runId: "pre-fix",
+      hypothesisId,
+      location: "src/services/repositories/importsRepository.js",
+      msg: `[DEBUG] ${msg}`,
+      data,
+      ts: Date.now(),
+    }),
+  }).catch(() => {});
+// #endregion
+
 export async function getImportacoes() {
   try {
     const snap = await getDocs(query(collection(db, COLLECTIONS.IMPORTACOES), orderBy("importadoEm", "desc")));
@@ -163,6 +180,18 @@ export async function importShopeeVenda(arrayBuffer) {
   const rows = parseCSVBuffer(arrayBuffer);
   requireNonEmpty(rows, "CSV vazio ou sem colunas reconhecidas");
   const { prodMap, subIdMap, processed, colunas } = parseShopeeSalesRows(rows);
+  const subIdKeys = Object.keys(subIdMap || {});
+  const subIdResumo = subIdKeys.map((id) => ({
+    id,
+    ...subIdMap[id],
+  }));
+
+  __dbgSubIdImport("E", "importShopeeVenda.parsed", {
+    processed,
+    produtos: Object.keys(prodMap).length,
+    subIds: subIdKeys.length,
+    sampleSubIds: subIdKeys.slice(0, 12),
+  });
 
   const cliquesSnap = await getDocs(collection(db, COLLECTIONS.CLIQUES));
   const cliquesIndex = {};
@@ -198,29 +227,62 @@ export async function importShopeeVenda(arrayBuffer) {
     await flushIfNeeded();
   }
 
-  for (const [id, row] of Object.entries(subIdMap || {})) {
-    batch.set(doc(db, COLLECTIONS.SUBID_VENDAS, id), {
-      ...row,
-      updatedAt: serverTimestamp(),
-      importadoEm: serverTimestamp(),
-    }, { merge: true });
-    count++;
-    await flushIfNeeded();
-  }
-
   batch.set(doc(collection(db, COLLECTIONS.IMPORTACOES)), {
     tipo: "shopee_venda",
     linhasProcessadas: processed,
     produtosUnicos: Object.keys(prodMap).length,
     subIdsUnicos: Object.keys(subIdMap || {}).length,
+    subIdResumo,
     status: "sucesso",
     importadoEm: serverTimestamp(),
   });
   count++;
 
   await batch.commit();
+
+  let subIdsPersistidos = true;
+  let subIdsError = null;
+  try {
+    let subBatch = writeBatch(db);
+    let subCount = 0;
+    for (const [id, row] of Object.entries(subIdMap || {})) {
+      __dbgSubIdImport("E", "importShopeeVenda.subid.prepare", {
+        id,
+        subid: row?.subid ?? null,
+      });
+      subBatch.set(doc(db, COLLECTIONS.SUBID_VENDAS, id), {
+        ...row,
+        updatedAt: serverTimestamp(),
+        importadoEm: serverTimestamp(),
+      }, { merge: true });
+      subCount++;
+      if (subCount >= 400) {
+        await subBatch.commit();
+        subBatch = writeBatch(db);
+        subCount = 0;
+      }
+    }
+    if (subCount > 0) await subBatch.commit();
+    __dbgSubIdImport("E", "importShopeeVenda.subid.commit.success", { total: subIdKeys.length });
+  } catch (error) {
+    subIdsPersistidos = false;
+    subIdsError = String(error?.message || error || "Erro desconhecido ao salvar subIDs");
+    __dbgSubIdImport("E", "importShopeeVenda.subid.commit.error", {
+      message: subIdsError,
+      name: error?.name || null,
+      code: error?.code || null,
+    });
+  }
+
   autoLinkAds().catch((e) => console.warn("Auto-link ads:", e.message));
-  return { linhas: processed, produtos: Object.keys(prodMap).length, subIds: Object.keys(subIdMap || {}).length, colunas };
+  return {
+    linhas: processed,
+    produtos: Object.keys(prodMap).length,
+    subIds: subIdKeys.length,
+    subIdsPersistidos,
+    subIdsError,
+    colunas,
+  };
 }
 
 export async function importShopeeClique(arrayBuffer) {

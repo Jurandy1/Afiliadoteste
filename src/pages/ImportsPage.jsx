@@ -135,6 +135,12 @@ export default function ImportsPage({ onImportDone }) {
                   {result.produtosVinculados != null && result.produtosVinculados > 0 ? ` · ${result.produtosVinculados} produtos vinculados a anúncios` : ""}
                   {result.produtosAtualizados != null && result.produtosAtualizados > 0 ? ` · ${result.produtosAtualizados} produtos com cliques atualizados` : ""}
                 </div>
+                {result.subIdsPersistidos === false && (
+                  <div className="mt-1 text-[11px] text-amber-700">
+                    Aviso: os agregados por SubID não puderam ser salvos no Firestore.
+                    {result.subIdsError ? ` Motivo: ${result.subIdsError}` : ""}
+                  </div>
+                )}
                 {result.porReferenciador && (
                   <div className="mt-1">
                     Por canal: {Object.entries(result.porReferenciador).map(([k, v]) => `${k}: ${v}`).join(", ")}

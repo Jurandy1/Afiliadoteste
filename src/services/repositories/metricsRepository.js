@@ -4,6 +4,23 @@ import { getProdutos, getCliques, getSubIdVendas } from "./productsRepository";
 import { getMetaAds, getPinterest } from "./campaignsRepository";
 import { getImportacoes } from "./importsRepository";
 
+// #region debug-point A-D:subid-mismatch-merge
+const __dbgSubIdMismatch = (hypothesisId, msg, data = {}) =>
+  fetch("http://127.0.0.1:7778/event", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      sessionId: "subid-mismatch",
+      runId: "pre-fix",
+      hypothesisId,
+      location: "src/services/repositories/metricsRepository.js",
+      msg: `[DEBUG] ${msg}`,
+      data,
+      ts: Date.now(),
+    }),
+  }).catch(() => {});
+// #endregion
+
 export async function getDashboardData(settings = {}) {
   const { impostoMeta = 0, impostoNf = 0 } = settings || {};
 
@@ -12,9 +29,33 @@ export async function getDashboardData(settings = {}) {
     getMetaAds(),
     getPinterest(),
     getCliques(),
-    getSubIdVendas(),
+    getSubIdVendas().catch(() => []),
     getImportacoes(),
   ]);
+
+  const latestShopeeVendaImport = [...importacoes]
+    .filter((item) => item.tipo === "shopee_venda")
+    .sort((a, b) => {
+      const ta = a?.importadoEm?.seconds || 0;
+      const tb = b?.importadoEm?.seconds || 0;
+      return tb - ta;
+    })[0];
+
+  const effectiveSubIdVendas = (subIdVendas && subIdVendas.length)
+    ? subIdVendas
+    : Array.isArray(latestShopeeVendaImport?.subIdResumo)
+      ? latestShopeeVendaImport.subIdResumo
+      : [];
+
+  __dbgSubIdMismatch("A", "dashboardData.sources.loaded", {
+    produtos: produtos.length,
+    metaAds: metaAds.length,
+    pinterest: pinterest.length,
+    cliquesData: cliquesData.length,
+    subIdVendas: subIdVendas.length,
+    effectiveSubIdVendas: effectiveSubIdVendas.length,
+    importacoes: importacoes.length,
+  });
 
   const metaIndex = Object.fromEntries(metaAds.map((m) => [m.id, m]));
   const pinIndex = Object.fromEntries(pinterest.map((p) => [p.id, p]));
@@ -55,7 +96,7 @@ export async function getDashboardData(settings = {}) {
   });
 
   const vendasBySubId = {};
-  (subIdVendas || []).forEach((v) => {
+  effectiveSubIdVendas.forEach((v) => {
     const key = v.id || (v.subid || "__sem_subid__");
     vendasBySubId[key] = v;
   });
@@ -107,6 +148,20 @@ export async function getDashboardData(settings = {}) {
     };
   });
 
+  __dbgSubIdMismatch("B", "dashboardData.subids.merged", {
+    allSubIds: allSubIds.size,
+    sample: subIds.slice(0, 5).map((r) => ({
+      id: r.id,
+      subid: r.subid,
+      comissoes: r.comissoes,
+      faturamento: r.faturamento,
+      gasto: r.gasto,
+      total_vendas: r.total_vendas,
+      cliques_anuncio: r.cliques_anuncio,
+      cliques_shopee: r.cliques_shopee,
+    })),
+  });
+
   subIds = subIds.filter((r) => !(
     (r.gasto || 0) === 0 &&
     (r.comissoes || 0) === 0 &&
@@ -114,20 +169,47 @@ export async function getDashboardData(settings = {}) {
     (r.cliques_shopee || 0) === 0
   ));
 
-  const totalComissao = subIds.length ? subIds.reduce((s, r) => s + (r.comissoes || 0), 0) : enriched.reduce((s, p) => s + (p.comissao_total || 0), 0);
+  const hasSubIdSalesData = subIds.some(
+    (r) => (r.comissoes || 0) > 0 || (r.faturamento || 0) > 0 || (r.total_vendas || 0) > 0,
+  );
+
+  __dbgSubIdMismatch("C", "dashboardData.subids.sales-presence", {
+    hasSubIdSalesData,
+    subIdsCount: subIds.length,
+    rowsWithSales: subIds.filter((r) => (r.comissoes || 0) > 0 || (r.total_vendas || 0) > 0).length,
+  });
+
+  const totalComissao = hasSubIdSalesData
+    ? subIds.reduce((s, r) => s + (r.comissoes || 0), 0)
+    : enriched.reduce((s, p) => s + (p.comissao_total || 0), 0);
   const comissaoConcluida = enriched.reduce((s, p) => s + (p.comissao_concluida || 0), 0);
   const comissaoPendente = enriched.reduce((s, p) => s + (p.comissao_pendente || 0), 0);
   const comissaoCancelada = enriched.reduce((s, p) => s + (p.comissao_cancelada || 0), 0);
-  const faturamentoBruto = subIds.length ? subIds.reduce((s, r) => s + (r.faturamento || 0), 0) : enriched.reduce((s, p) => s + (p.gmv_total || 0), 0);
-  const totalInvest = subIds.length ? subIds.reduce((s, r) => s + (r.gasto || 0), 0) : (metaTotalGasto + pinTotalGasto);
-  const totalVendas = subIds.length ? subIds.reduce((s, r) => s + (r.total_vendas || 0), 0) : enriched.reduce((s, p) => s + ((p.vendas_diretas || 0) + (p.vendas_indiretas || 0)), 0);
+  const faturamentoBruto = hasSubIdSalesData
+    ? subIds.reduce((s, r) => s + (r.faturamento || 0), 0)
+    : enriched.reduce((s, p) => s + (p.gmv_total || 0), 0);
+  const totalInvest = metaTotalGasto + pinTotalGasto;
+  const totalVendas = hasSubIdSalesData
+    ? subIds.reduce((s, r) => s + (r.total_vendas || 0), 0)
+    : enriched.reduce((s, p) => s + ((p.vendas_diretas || 0) + (p.vendas_indiretas || 0)), 0);
+  const vendasDiretas = hasSubIdSalesData
+    ? subIds.reduce((s, r) => s + (r.vendas_diretas || 0), 0)
+    : enriched.reduce((s, p) => s + (p.vendas_diretas || 0), 0);
+  const vendasIndiretas = hasSubIdSalesData
+    ? subIds.reduce((s, r) => s + (r.vendas_indiretas || 0), 0)
+    : enriched.reduce((s, p) => s + (p.vendas_indiretas || 0), 0);
+  const qtdItens = hasSubIdSalesData
+    ? subIds.reduce((s, r) => s + (r.qtd_itens || 0), 0)
+    : enriched.reduce((s, p) => s + (p.vendas || 0), 0);
   const totalCliquesAds = metaTotalCliques + pinTotalCliques;
   const totalCliques = totalCliquesShopee + enriched.reduce((s, p) => s + (p.cliques || 0), 0);
 
-  const impostoTotal = subIds.length
+  const impostoTotal = hasSubIdSalesData
     ? subIds.reduce((s, r) => s + (r.imposto_total || 0), 0)
     : (totalInvest * (impostoMeta || 0) / 100) + (totalComissao * (impostoNf || 0) / 100);
-  const lucro = subIds.length ? subIds.reduce((s, r) => s + (r.lucro || 0), 0) : (totalComissao - totalInvest - impostoTotal);
+  const lucro = hasSubIdSalesData
+    ? subIds.reduce((s, r) => s + (r.lucro || 0), 0)
+    : (totalComissao - totalInvest - impostoTotal);
   const lucroEstimado = comissaoConcluida - totalInvest;
   const roas = totalInvest > 0 ? comissaoConcluida / totalInvest : 0;
   const roiGeral = totalInvest > 0 ? lucro / totalInvest : 0;
@@ -182,6 +264,9 @@ export async function getDashboardData(settings = {}) {
       comissaoCancelada,
       faturamentoBruto,
       totalVendas,
+      vendasDiretas,
+      vendasIndiretas,
+      qtdItens,
       totalCliquesShopee,
       totalCliques,
       totalInvestimento: totalInvest,
@@ -208,6 +293,15 @@ export async function getDashboardData(settings = {}) {
     referrerBreakdown,
     comissaoPorCanal,
     subIds,
+    subIdDiagnostics: {
+      totalRows: subIds.length,
+      subIdSalesDocs: subIdVendas.length,
+      effectiveSubIdSalesDocs: effectiveSubIdVendas.length,
+      hasSubIdSalesData,
+      rowsWithSales: subIds.filter((r) => (r.comissoes || 0) > 0 || (r.total_vendas || 0) > 0).length,
+      isReliable: hasSubIdSalesData && effectiveSubIdVendas.length > 0,
+      source: subIdVendas.length > 0 ? "collection" : (effectiveSubIdVendas.length > 0 ? "importacao" : "none"),
+    },
     operationalAlerts,
   };
 }

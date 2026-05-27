@@ -16,6 +16,23 @@ import PaginationBar from "../components/tables/PaginationBar";
 import Badge from "../components/cards/Badge";
 import { ExternalLink } from "lucide-react";
 
+// #region debug-point C:dashboard-load
+const __dbg = (hypothesisId, msg, data = {}) =>
+  fetch("http://127.0.0.1:7777/event", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      sessionId: "firestore-permissions",
+      runId: "pre-fix",
+      hypothesisId,
+      location: "src/pages/DashboardPage.jsx",
+      msg: `[DEBUG] ${msg}`,
+      data,
+      ts: Date.now(),
+    }),
+  }).catch(() => {});
+// #endregion
+
 function readDashboardSettings() {
   try {
     const raw = window.localStorage.getItem("afilia:settings");
@@ -34,6 +51,7 @@ function readDashboardSettings() {
 export default function DashboardPage() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
   const [tablePage, setTablePage] = useState(1);
   const [statusFilter, setStatusFilter] = useState("all");
   const [roiFilter, setRoiFilter] = useState("all");
@@ -48,11 +66,18 @@ export default function DashboardPage() {
 
   const load = useCallback(async () => {
     setLoading(true);
+    setLoadError(null);
     try {
       setSettings(readDashboardSettings());
+      __dbg("C", "dashboard.load.start");
       setData(await getDashboardData(readDashboardSettings()));
+      __dbg("C", "dashboard.load.success");
     } catch (e) {
-      console.error(e);
+      setLoadError(e);
+      __dbg("C", "dashboard.load.error", {
+        code: e?.code || null,
+        message: String(e?.message || e || "unknown"),
+      });
     }
     setLoading(false);
   }, []);
@@ -76,6 +101,7 @@ export default function DashboardPage() {
 
   const kpis = data?.kpis;
   const subIds = data?.subIds;
+  const subIdDiagnostics = data?.subIdDiagnostics;
   const ranking = data?.ranking || [];
   const operationalAlerts = data?.operationalAlerts || [];
 
@@ -99,6 +125,24 @@ export default function DashboardPage() {
   }, [subIds, onlyLoss, onlyProfit, subSortField, subSortDir]);
 
   if (loading) return <LoadingSpinner />;
+  if (loadError) {
+    const isPermissionError = loadError?.code === "permission-denied" || String(loadError?.message || "").includes("insufficient permissions");
+    return (
+      <div className="bg-white rounded-lg border border-red-200 p-6">
+        <h3 className="text-sm font-semibold text-red-700 mb-2">
+          {isPermissionError ? "Permissão do Firebase necessária" : "Erro ao carregar dashboard"}
+        </h3>
+        <p className="text-xs text-gray-600 mb-3">
+          {isPermissionError
+            ? "O app conseguiu abrir, mas o Firestore bloqueou a leitura de uma das coleções usadas pelo dashboard."
+            : "Ocorreu um erro ao buscar os dados do dashboard."}
+        </p>
+        <div className="text-xs bg-red-50 border border-red-100 rounded-md px-3 py-2 text-red-700">
+          {String(loadError?.message || loadError)}
+        </div>
+      </div>
+    );
+  }
   if (!data || data.produtos.length === 0) return <EmptyState />;
 
   const lucroUp = (kpis?.lucro || 0) >= 0;
@@ -152,7 +196,7 @@ export default function DashboardPage() {
           iconBg="bg-orange-50 text-orange-600"
           label="Vendas"
           value={fmtNum(kpis.totalVendas)}
-          trend={`Conv. ${fmtPct(kpis.convRate)}`}
+          trend={`${fmtNum(kpis.vendasDiretas)}D / ${fmtNum(kpis.vendasIndiretas)}I`}
           up
         />
         <KPICard
@@ -184,7 +228,20 @@ export default function DashboardPage() {
         )}
       </div>
 
-      {subIds && subIds.length > 0 && (
+      {subIdDiagnostics && !subIdDiagnostics.isReliable && (
+        <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-4">
+          <h3 className="text-sm font-semibold text-amber-800 mb-1">Detalhamento por SubID incompleto</h3>
+          <p className="text-xs text-amber-700">
+            O dashboard encontrou {fmtNum(subIdDiagnostics.totalRows)} SubIDs de ads/cliques, mas nenhum agregado de vendas por SubID salvo no Firebase.
+            Sem essa coleção, a tabela fica distorcida em relação ao `dashboard_completo.py` e ao CSV final.
+          </p>
+          <p className="text-xs text-amber-700 mt-2">
+            Para corrigir de verdade: publique a regra de `subid_vendas` no Firebase e reimporte a planilha de `Shopee — Vendas`.
+          </p>
+        </div>
+      )}
+
+      {subIds && subIds.length > 0 && subIdDiagnostics?.isReliable && (
         <div className="bg-white rounded-lg border border-gray-200 overflow-hidden mb-4">
           <div className="px-4 py-3 border-b border-gray-100">
             <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
@@ -262,28 +319,78 @@ export default function DashboardPage() {
               <tbody className="divide-y divide-gray-50">
                 {subIdsFilteredSorted.length === 0 ? (
                   <tr><td colSpan={14} className="px-4 py-8 text-center text-gray-400">Nenhuma campanha com esses filtros</td></tr>
-                ) : subIdsFilteredSorted.map((r) => {
-                  const roiColor = r.roi >= settings.roiMinimo ? "#16A34A" : r.roi >= 0 ? "#D97706" : "#DC2626";
-                  const lucroColor = (r.lucro || 0) >= 0 ? "#16A34A" : "#DC2626";
-                  return (
-                    <tr key={r.id} className="hover:bg-gray-50/50">
-                      <td className="px-3 py-2 font-medium text-gray-900">{r.subid || "—"}</td>
-                      <td className="px-2 py-2 text-center text-emerald-700 font-semibold">{fmt(r.comissoes)}</td>
-                      <td className="px-2 py-2 text-center">{fmt(r.gasto)}</td>
-                      <td className="px-2 py-2 text-center font-semibold" style={{ color: lucroColor }}>{fmt(r.lucro)}</td>
-                      <td className="px-2 py-2 text-center font-bold" style={{ color: roiColor }}>{r.gasto > 0 ? ((r.roi || 0) * 100).toFixed(2) + "%" : "—"}</td>
-                      <td className="px-2 py-2 text-center">{fmt(r.faturamento)}</td>
-                      <td className="px-2 py-2 text-center">{r.ticket_medio > 0 ? fmt(r.ticket_medio) : "—"}</td>
-                      <td className="px-2 py-2 text-center">{fmtNum(r.total_vendas)}</td>
-                      <td className="px-2 py-2 text-center">{fmtNum(r.vendas_diretas)}</td>
-                      <td className="px-2 py-2 text-center">{fmtNum(r.vendas_indiretas)}</td>
-                      <td className="px-2 py-2 text-center">{fmtNum(r.qtd_itens)}</td>
-                      <td className="px-2 py-2 text-center">{fmtNum(r.cliques_anuncio)}</td>
-                      <td className="px-2 py-2 text-center">{fmtNum(r.cliques_shopee)}</td>
-                      <td className="px-2 py-2 text-center">{r.cliques_anuncio > 0 ? ((r.batimento || 0) * 100).toFixed(2) + "%" : "—"}</td>
-                    </tr>
+                ) : (() => {
+                  const totals = subIdsFilteredSorted.reduce((acc, r) => {
+                    acc.comissoes += r.comissoes || 0;
+                    acc.gasto += r.gasto || 0;
+                    acc.lucro += r.lucro || 0;
+                    acc.faturamento += r.faturamento || 0;
+                    acc.total_vendas += r.total_vendas || 0;
+                    acc.vendas_diretas += r.vendas_diretas || 0;
+                    acc.vendas_indiretas += r.vendas_indiretas || 0;
+                    acc.qtd_itens += r.qtd_itens || 0;
+                    acc.cliques_anuncio += r.cliques_anuncio || 0;
+                    acc.cliques_shopee += r.cliques_shopee || 0;
+                    return acc;
+                  }, {
+                    comissoes: 0,
+                    gasto: 0,
+                    lucro: 0,
+                    faturamento: 0,
+                    total_vendas: 0,
+                    vendas_diretas: 0,
+                    vendas_indiretas: 0,
+                    qtd_itens: 0,
+                    cliques_anuncio: 0,
+                    cliques_shopee: 0,
+                  });
+                  const roiTotal = totals.gasto > 0 ? (totals.lucro / totals.gasto) : 0;
+                  const ticketTotal = totals.total_vendas > 0 ? (totals.faturamento / totals.total_vendas) : 0;
+
+                  const rows = subIdsFilteredSorted.map((r) => {
+                    const roiColor = r.roi >= settings.roiMinimo ? "#16A34A" : r.roi >= 0 ? "#D97706" : "#DC2626";
+                    const lucroColor = (r.lucro || 0) >= 0 ? "#16A34A" : "#DC2626";
+                    return (
+                      <tr key={r.id} className="hover:bg-gray-50/50">
+                        <td className="px-3 py-2 font-medium text-gray-900">{r.subid || "—"}</td>
+                        <td className="px-2 py-2 text-center text-emerald-700 font-semibold">{fmt(r.comissoes)}</td>
+                        <td className="px-2 py-2 text-center">{fmt(r.gasto)}</td>
+                        <td className="px-2 py-2 text-center font-semibold" style={{ color: lucroColor }}>{fmt(r.lucro)}</td>
+                        <td className="px-2 py-2 text-center font-bold" style={{ color: roiColor }}>{r.gasto > 0 ? ((r.roi || 0) * 100).toFixed(2) + "%" : "—"}</td>
+                        <td className="px-2 py-2 text-center">{fmt(r.faturamento)}</td>
+                        <td className="px-2 py-2 text-center">{r.ticket_medio > 0 ? fmt(r.ticket_medio) : "—"}</td>
+                        <td className="px-2 py-2 text-center">{fmtNum(r.total_vendas)}</td>
+                        <td className="px-2 py-2 text-center">{fmtNum(r.vendas_diretas)}</td>
+                        <td className="px-2 py-2 text-center">{fmtNum(r.vendas_indiretas)}</td>
+                        <td className="px-2 py-2 text-center">{fmtNum(r.qtd_itens)}</td>
+                        <td className="px-2 py-2 text-center">{fmtNum(r.cliques_anuncio)}</td>
+                        <td className="px-2 py-2 text-center">{fmtNum(r.cliques_shopee)}</td>
+                        <td className="px-2 py-2 text-center">{r.cliques_anuncio > 0 ? ((r.batimento || 0) * 100).toFixed(2) + "%" : "—"}</td>
+                      </tr>
+                    );
+                  });
+
+                  rows.push(
+                    <tr key="__total__" className="bg-gray-50 font-semibold">
+                      <td className="px-3 py-2 text-gray-900">TOTAL</td>
+                      <td className="px-2 py-2 text-center text-gray-900">{fmt(totals.comissoes)}</td>
+                      <td className="px-2 py-2 text-center text-gray-900">{fmt(totals.gasto)}</td>
+                      <td className="px-2 py-2 text-center text-gray-900">{fmt(totals.lucro)}</td>
+                      <td className="px-2 py-2 text-center text-gray-900">{totals.gasto > 0 ? (roiTotal * 100).toFixed(2) + "%" : "—"}</td>
+                      <td className="px-2 py-2 text-center text-gray-900">{fmt(totals.faturamento)}</td>
+                      <td className="px-2 py-2 text-center text-gray-900">{ticketTotal > 0 ? fmt(ticketTotal) : "—"}</td>
+                      <td className="px-2 py-2 text-center text-gray-900">{fmtNum(totals.total_vendas)}</td>
+                      <td className="px-2 py-2 text-center text-gray-900">{fmtNum(totals.vendas_diretas)}</td>
+                      <td className="px-2 py-2 text-center text-gray-900">{fmtNum(totals.vendas_indiretas)}</td>
+                      <td className="px-2 py-2 text-center text-gray-900">{fmtNum(totals.qtd_itens)}</td>
+                      <td className="px-2 py-2 text-center text-gray-900">{fmtNum(totals.cliques_anuncio)}</td>
+                      <td className="px-2 py-2 text-center text-gray-900">{fmtNum(totals.cliques_shopee)}</td>
+                      <td className="px-2 py-2 text-center text-gray-500">—</td>
+                    </tr>,
                   );
-                })}
+
+                  return rows;
+                })()}
               </tbody>
             </table>
           </div>
