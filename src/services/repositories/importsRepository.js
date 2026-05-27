@@ -1,4 +1,4 @@
-import { collection, doc, getDocs, orderBy, query, serverTimestamp, writeBatch } from "firebase/firestore";
+import { collection, deleteDoc, doc, getDocs, orderBy, query, serverTimestamp, writeBatch } from "firebase/firestore";
 import { db } from "../firebase/client";
 import { COLLECTIONS } from "../firebase/firestore";
 import { parseCSVBuffer } from "../parsers/csvParser";
@@ -17,6 +17,11 @@ export async function getImportacoes() {
     const snap = await getDocs(collection(db, COLLECTIONS.IMPORTACOES));
     return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
   }
+}
+
+export async function removerImportacao(importacaoId) {
+  if (!importacaoId) throw new Error("ID da importação inválido");
+  await deleteDoc(doc(db, COLLECTIONS.IMPORTACOES, importacaoId));
 }
 
 export async function importShopeeVenda(arrayBuffer) {

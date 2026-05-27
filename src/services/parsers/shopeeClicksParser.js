@@ -1,4 +1,4 @@
-import { normalizeColumnName, buildColumnIndex, findColumn } from "../../utils/columnNormalizer";
+import { buildColumnIndex, findColumn } from "../../utils/columnNormalizer";
 import { normalizeSubId } from "../../utils/normalizeSubId";
 
 /**
@@ -12,12 +12,9 @@ export function parseShopeeClicksRows(rows) {
 
   const colIdx = buildColumnIndex(rows[0]);
 
-  const COL_SUB = findColumn(colIdx, "sub_id");
+  const COL_SUB = findColumn(colIdx, "sub_id", "sub");
   const COL_REF = findColumn(colIdx, "referenciador", "referrer", "canal");
   const COL_TEMPO = findColumn(colIdx, "tempo_dos_cliques", "data", "date", "horario");
-  const COL_ID_CLICK = findColumn(colIdx, "id_dos_cliques", "click_id", "id");
-  void COL_ID_CLICK;
-  void normalizeColumnName;
 
   const subIdMap = {};
   const byReferrer = {};

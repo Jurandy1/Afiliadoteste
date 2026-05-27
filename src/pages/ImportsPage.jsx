@@ -1,6 +1,13 @@
 import { useEffect, useState } from "react";
-import { Check, DollarSign, Loader2, MousePointerClick, Target, TrendingUp, X } from "lucide-react";
-import { getImportacoes, importMetaAds, importPinterest, importShopeeClique, importShopeeVenda } from "../services/repositories/importsRepository";
+import { Check, DollarSign, Loader2, MousePointerClick, Target, Trash2, TrendingUp, X } from "lucide-react";
+import {
+  getImportacoes,
+  importMetaAds,
+  importPinterest,
+  importShopeeClique,
+  importShopeeVenda,
+  removerImportacao,
+} from "../services/repositories/importsRepository";
 import Badge from "../components/cards/Badge";
 import ReconcileAdsButton from "../features/imports/ReconcileAdsButton";
 import ReconcileButton from "../features/imports/ReconcileButton";
@@ -25,6 +32,7 @@ export default function ImportsPage({ onImportDone }) {
   const [uploading, setUploading] = useState(null);
   const [result, setResult] = useState(null);
   const [history, setHistory] = useState([]);
+  const [removingId, setRemovingId] = useState(null);
 
   useEffect(() => {
     getImportacoes().then(setHistory).catch(() => {});
@@ -58,6 +66,22 @@ export default function ImportsPage({ onImportDone }) {
     } finally {
       setUploading(null);
       e.target.value = "";
+    }
+  };
+
+  const handleRemoveImport = async (item) => {
+    const ok = window.confirm(`Remover importação de ${TIPO_LABELS[item.tipo] || item.tipo}?`);
+    if (!ok) return;
+
+    setRemovingId(item.id);
+    try {
+      await removerImportacao(item.id);
+      setHistory((prev) => prev.filter((h) => h.id !== item.id));
+    } catch (err) {
+      console.error(err);
+      setResult({ success: false, error: err.message || "Erro ao remover importação" });
+    } finally {
+      setRemovingId(null);
     }
   };
 
@@ -155,6 +179,7 @@ export default function ImportsPage({ onImportDone }) {
                 <th className="text-left px-3 py-2">Tipo</th>
                 <th className="px-3 py-2">Linhas</th>
                 <th className="px-3 py-2">Status</th>
+                <th className="px-3 py-2">Ações</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">
@@ -167,6 +192,17 @@ export default function ImportsPage({ onImportDone }) {
                   <td className="px-3 py-2 text-center">{h.linhasProcessadas || 0}</td>
                   <td className="px-3 py-2 text-center">
                     <Badge text={h.status === "sucesso" ? "✓ OK" : "✗ Erro"} variant={h.status === "sucesso" ? "Escalando" : "Sem Estoque"} />
+                  </td>
+                  <td className="px-3 py-2 text-center">
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveImport(h)}
+                      disabled={removingId === h.id}
+                      className="inline-flex items-center gap-1 rounded border border-red-200 px-2 py-1 text-[10px] font-semibold text-red-600 hover:bg-red-50 disabled:opacity-50"
+                    >
+                      {removingId === h.id ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+                      Remover
+                    </button>
                   </td>
                 </tr>
               ))}

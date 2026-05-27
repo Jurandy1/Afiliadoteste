@@ -1,5 +1,5 @@
 import { parseBRL, parsePct } from "../../utils/numbers";
-import { normalizeColumnName, buildColumnIndex, findColumn, getColValue } from "../../utils/columnNormalizer";
+import { normalizeColumnName, buildColumnIndex, findColumn } from "../../utils/columnNormalizer";
 import { normalizeSubId } from "../../utils/normalizeSubId";
 
 function classifyStatus(rawStatus) {
@@ -23,9 +23,8 @@ export function parseShopeeSalesRows(rows) {
   if (!rows || rows.length === 0) return { prodMap: {}, processed: 0, colunas: [] };
 
   const colIdx = buildColumnIndex(rows[0]);
-  void getColValue;
 
-  const COL_NOME = findColumn(colIdx, "nome_do_item");
+  const COL_NOME = findColumn(colIdx, "nome_do_item", "nome_do_produto", "nome_item", "nome");
   const COL_PRECO = findColumn(colIdx, "preco_r", "precor");
   const COL_VALOR = findColumn(colIdx, "valor_de_compra");
   const COL_QTD = findColumn(colIdx, "qtd");
@@ -38,7 +37,9 @@ export function parseShopeeSalesRows(rows) {
   const COL_COMIS =
     findColumn(colIdx, "comissao_liquida") ||
     findColumn(colIdx, "comissao_total_do_item") ||
-    findColumn(colIdx, "comissao_total");
+    findColumn(colIdx, "comissao_total") ||
+    Object.keys(rows[0] || {}).slice(-1)[0] ||
+    null;
   const COL_STATUS = findColumn(colIdx, "status_do_pedido");
   const COL_NOTAS = findColumn(colIdx, "notas", "status_do_item");
   const COL_CANAL = findColumn(colIdx, "canal");
@@ -49,8 +50,11 @@ export function parseShopeeSalesRows(rows) {
   let processed = 0;
 
   for (const row of rows) {
+    const idItemFallback = COL_ID_ITEM ? String(row[COL_ID_ITEM] || "").trim() : "";
+    const subFallback = COL_SUB ? String(row[COL_SUB] || "").trim() : "";
     const nome = COL_NOME ? String(row[COL_NOME] || "").trim() : "";
-    if (!nome) continue;
+    const nomeResolvido = nome || idItemFallback || subFallback;
+    if (!nomeResolvido) continue;
 
     const statusRaw = COL_STATUS ? String(row[COL_STATUS] || "") : "";
     const notasRaw = COL_NOTAS ? String(row[COL_NOTAS] || "") : "";
@@ -68,7 +72,7 @@ export function parseShopeeSalesRows(rows) {
 
     if (isInvalid) continue;
 
-    const key = nome.toLowerCase();
+    const key = nomeResolvido.toLowerCase();
     const preco = COL_PRECO ? parseBRL(row[COL_PRECO]) : 0;
     const gmv = COL_VALOR ? parseBRL(row[COL_VALOR]) || preco : preco;
     const qty = COL_QTD ? parseInt(row[COL_QTD], 10) || 1 : 1;
@@ -80,7 +84,8 @@ export function parseShopeeSalesRows(rows) {
     const taxaComissao = COL_TAXA ? parsePct(row[COL_TAXA]) : 0;
     const comissaoVal = COL_COMIS ? parseBRL(row[COL_COMIS]) : 0;
     const subId = COL_SUB ? String(row[COL_SUB] || "").trim() : "";
-    const canal = COL_CANAL ? String(row[COL_CANAL] || "").replace(/;/g, "").trim() : "Others";
+    const canalRaw = COL_CANAL ? String(row[COL_CANAL] || "") : "";
+    const canal = canalRaw.replace(/;/g, "").trim() || "Others";
 
     let isDireta = 0;
     let isIndireta = 1;
@@ -92,7 +97,7 @@ export function parseShopeeSalesRows(rows) {
 
     if (!prodMap[key]) {
       prodMap[key] = {
-        nome,
+        nome: nomeResolvido,
         plataforma: "Shopee",
         loja,
         preco,
