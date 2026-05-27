@@ -20,7 +20,7 @@ function classifyStatus(rawStatus) {
 }
 
 export function parseShopeeSalesRows(rows) {
-  if (!rows || rows.length === 0) return { prodMap: {}, processed: 0, colunas: [] };
+  if (!rows || rows.length === 0) return { prodMap: {}, subIdMap: {}, processed: 0, colunas: [] };
 
   const colIdx = buildColumnIndex(rows[0]);
 
@@ -47,6 +47,7 @@ export function parseShopeeSalesRows(rows) {
   const COL_ATRIB = findColumn(colIdx, "tipo_de_atribuicao", "atribuicao");
 
   const prodMap = {};
+  const subIdMap = {};
   let processed = 0;
 
   for (const row of rows) {
@@ -148,8 +149,26 @@ export function parseShopeeSalesRows(rows) {
     }
 
     if (canal) p.canais[canal] = (p.canais[canal] || 0) + 1;
+
+    const subIdNorm = normalizeSubId(subId);
+    const subKey = subIdNorm || "__sem_subid__";
+    if (!subIdMap[subKey]) {
+      subIdMap[subKey] = {
+        subid: subIdNorm,
+        comissoes: 0,
+        faturamento: 0,
+        vendas_diretas: 0,
+        vendas_indiretas: 0,
+        qtd_itens: 0,
+      };
+    }
+    subIdMap[subKey].comissoes += comissaoVal;
+    subIdMap[subKey].faturamento += gmv;
+    subIdMap[subKey].vendas_diretas += isDireta;
+    subIdMap[subKey].vendas_indiretas += isIndireta;
+    subIdMap[subKey].qtd_itens += qty;
     processed++;
   }
 
-  return { prodMap, processed, colunas: Object.keys(rows[0] || {}) };
+  return { prodMap, subIdMap, processed, colunas: Object.keys(rows[0] || {}) };
 }

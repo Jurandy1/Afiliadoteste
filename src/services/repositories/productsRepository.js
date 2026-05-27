@@ -18,6 +18,11 @@ export async function getCliques() {
   return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
 }
 
+export async function getSubIdVendas() {
+  const snap = await getDocs(collection(db, COLLECTIONS.SUBID_VENDAS));
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+}
+
 export async function saveProductLink(produtoId, link_afiliado) {
   await setDoc(
     doc(db, COLLECTIONS.PRODUTOS, produtoId),

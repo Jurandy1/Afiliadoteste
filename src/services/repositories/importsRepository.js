@@ -45,7 +45,11 @@ async function deleteCollectionDocs(collectionName) {
 
 async function cleanupImportedDataByTipo(tipo) {
   if (tipo === "shopee_venda") {
-    return { produtosRemovidos: await deleteCollectionDocs(COLLECTIONS.PRODUTOS) };
+    const [produtosRemovidos, subIdsRemovidos] = await Promise.all([
+      deleteCollectionDocs(COLLECTIONS.PRODUTOS),
+      deleteCollectionDocs(COLLECTIONS.SUBID_VENDAS),
+    ]);
+    return { produtosRemovidos, subIdsRemovidos };
   }
 
   if (tipo === "shopee_clique") {
@@ -158,7 +162,7 @@ export async function removerImportacao(importacaoId, tipo) {
 export async function importShopeeVenda(arrayBuffer) {
   const rows = parseCSVBuffer(arrayBuffer);
   requireNonEmpty(rows, "CSV vazio ou sem colunas reconhecidas");
-  const { prodMap, processed, colunas } = parseShopeeSalesRows(rows);
+  const { prodMap, subIdMap, processed, colunas } = parseShopeeSalesRows(rows);
 
   const cliquesSnap = await getDocs(collection(db, COLLECTIONS.CLIQUES));
   const cliquesIndex = {};
@@ -168,7 +172,17 @@ export async function importShopeeVenda(arrayBuffer) {
     if (norm) cliquesIndex[norm] = (cliquesIndex[norm] || 0) + (data.cliques || 0);
   });
 
-  const batch = writeBatch(db);
+  let batch = writeBatch(db);
+  let count = 0;
+
+  const flushIfNeeded = async () => {
+    if (count >= 400) {
+      await batch.commit();
+      batch = writeBatch(db);
+      count = 0;
+    }
+  };
+
   for (const prod of Object.values(prodMap)) {
     const sub_ids = [...prod.sub_ids];
     const cliquesTotal = sub_ids.reduce((sum, sid) => sum + (cliquesIndex[normalizeSubId(sid)] || 0), 0);
@@ -180,19 +194,33 @@ export async function importShopeeVenda(arrayBuffer) {
       updatedAt: serverTimestamp(),
       importadoEm: serverTimestamp(),
     });
+    count++;
+    await flushIfNeeded();
+  }
+
+  for (const [id, row] of Object.entries(subIdMap || {})) {
+    batch.set(doc(db, COLLECTIONS.SUBID_VENDAS, id), {
+      ...row,
+      updatedAt: serverTimestamp(),
+      importadoEm: serverTimestamp(),
+    }, { merge: true });
+    count++;
+    await flushIfNeeded();
   }
 
   batch.set(doc(collection(db, COLLECTIONS.IMPORTACOES)), {
     tipo: "shopee_venda",
     linhasProcessadas: processed,
     produtosUnicos: Object.keys(prodMap).length,
+    subIdsUnicos: Object.keys(subIdMap || {}).length,
     status: "sucesso",
     importadoEm: serverTimestamp(),
   });
+  count++;
 
   await batch.commit();
   autoLinkAds().catch((e) => console.warn("Auto-link ads:", e.message));
-  return { linhas: processed, produtos: Object.keys(prodMap).length, colunas };
+  return { linhas: processed, produtos: Object.keys(prodMap).length, subIds: Object.keys(subIdMap || {}).length, colunas };
 }
 
 export async function importShopeeClique(arrayBuffer) {

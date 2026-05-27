@@ -1,6 +1,7 @@
 export const COLLECTIONS = {
   PRODUTOS: "produtos",
   CLIQUES: "cliques_shopee",
+  SUBID_VENDAS: "subid_vendas",
   META_ADS: "meta_ads",
   PINTEREST: "pinterest_ads",
   IMPORTACOES: "importacoes",

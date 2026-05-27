@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { BarChart3, DollarSign, Target, TrendingUp } from "lucide-react";
+import { BarChart3, DollarSign, ShoppingBag, Target, TrendingUp, Ticket } from "lucide-react";
 import { getDashboardData } from "../services/repositories/metricsRepository";
 import { filterProdutos, sortProdutos } from "../domain/attribution/productFilters";
 import { paginate, DEFAULT_PAGE_SIZE } from "../utils/pagination";
@@ -16,6 +16,21 @@ import PaginationBar from "../components/tables/PaginationBar";
 import Badge from "../components/cards/Badge";
 import { ExternalLink } from "lucide-react";
 
+function readDashboardSettings() {
+  try {
+    const raw = window.localStorage.getItem("afilia:settings");
+    const parsed = raw ? JSON.parse(raw) : {};
+    return {
+      roiMinimo: typeof parsed.roiMinimo === "number" ? parsed.roiMinimo : 0.5,
+      metaMensal: typeof parsed.metaMensal === "number" ? parsed.metaMensal : 10000,
+      impostoMeta: typeof parsed.impostoMeta === "number" ? parsed.impostoMeta : 0,
+      impostoNf: typeof parsed.impostoNf === "number" ? parsed.impostoNf : 0,
+    };
+  } catch {
+    return { roiMinimo: 0.5, metaMensal: 10000, impostoMeta: 0, impostoNf: 0 };
+  }
+}
+
 export default function DashboardPage() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -25,11 +40,17 @@ export default function DashboardPage() {
   const [origemFilter, setOrigemFilter] = useState("all");
   const [sortField, setSortField] = useState("comissao_concluida");
   const [sortDir, setSortDir] = useState("desc");
+  const [subSortField, setSubSortField] = useState("roi");
+  const [subSortDir, setSubSortDir] = useState("desc");
+  const [onlyLoss, setOnlyLoss] = useState(false);
+  const [onlyProfit, setOnlyProfit] = useState(false);
+  const [settings, setSettings] = useState(readDashboardSettings);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      setData(await getDashboardData());
+      setSettings(readDashboardSettings());
+      setData(await getDashboardData(readDashboardSettings()));
     } catch (e) {
       console.error(e);
     }
@@ -53,20 +74,221 @@ export default function DashboardPage() {
     else { setSortField(field); setSortDir("desc"); }
   };
 
+  const kpis = data?.kpis;
+  const subIds = data?.subIds;
+  const ranking = data?.ranking || [];
+  const operationalAlerts = data?.operationalAlerts || [];
+
+  const metaPct = useMemo(() => {
+    const fat = kpis?.faturamentoBruto || 0;
+    return settings.metaMensal > 0 ? Math.min(fat / settings.metaMensal, 1) : 0;
+  }, [kpis?.faturamentoBruto, settings.metaMensal]);
+
+  const subIdsFilteredSorted = useMemo(() => {
+    const base = [...(subIds || [])];
+    let rows = base;
+    if (onlyLoss && !onlyProfit) rows = rows.filter((r) => (r.lucro || 0) < 0);
+    if (onlyProfit && !onlyLoss) rows = rows.filter((r) => (r.lucro || 0) > 0);
+    const dir = subSortDir === "asc" ? 1 : -1;
+    rows.sort((a, b) => {
+      const av = a?.[subSortField] ?? 0;
+      const bv = b?.[subSortField] ?? 0;
+      return (bv - av) * dir;
+    });
+    return rows;
+  }, [subIds, onlyLoss, onlyProfit, subSortField, subSortDir]);
+
   if (loading) return <LoadingSpinner />;
   if (!data || data.produtos.length === 0) return <EmptyState />;
 
-  const { kpis, ranking, operationalAlerts } = data;
-  const lucroUp = (kpis.lucroEstimado || 0) >= 0;
+  const lucroUp = (kpis?.lucro || 0) >= 0;
 
   return (
     <>
-      <div className="grid grid-cols-4 gap-3 mb-4">
-        <KPICard icon={<DollarSign size={18} />} iconBg="bg-blue-50 text-blue-600" label="Comissão concluída" value={fmt(kpis.comissaoConcluida)} trend={`Total bruto ${fmt(kpis.totalComissao)}`} up />
-        <KPICard icon={<Target size={18} />} iconBg="bg-violet-50 text-violet-600" label="Investimento total" value={fmt(kpis.totalInvestimento)} trend={`Meta ${fmt(kpis.metaTotalGasto)} · Pin ${fmt(kpis.pinTotalGasto)}`} />
-        <KPICard icon={<TrendingUp size={18} />} iconBg={lucroUp ? "bg-emerald-50 text-emerald-600" : "bg-red-50 text-red-600"} label="Lucro estimado" value={fmt(kpis.lucroEstimado)} trend="Comissão concluída − investimento" up={lucroUp} down={!lucroUp} />
-        <KPICard icon={<BarChart3 size={18} />} iconBg="bg-indigo-50 text-indigo-600" label="ROAS" value={fmtRoas(kpis.roas)} trend={`ROI médio produtos ${fmtPct(kpis.roiMedio)}`} up={(kpis.roas || 0) >= 1} />
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3 mb-4">
+        <KPICard
+          icon={<DollarSign size={18} />}
+          iconBg="bg-blue-50 text-blue-600"
+          label="Comissão"
+          value={fmt(kpis.totalComissao)}
+          trend={`Concluída ${fmt(kpis.comissaoConcluida)} · Pendente ${fmt(kpis.comissaoPendente)}`}
+          up={(kpis.totalComissao || 0) >= 0}
+        />
+        <KPICard
+          icon={<TrendingUp size={18} />}
+          iconBg="bg-indigo-50 text-indigo-600"
+          label="Fat. Bruto"
+          value={fmt(kpis.faturamentoBruto)}
+          trend={`${fmtNum(kpis.totalVendas)} vendas`}
+          up
+        />
+        <KPICard
+          icon={<Target size={18} />}
+          iconBg="bg-violet-50 text-violet-600"
+          label="Gasto"
+          value={fmt(kpis.totalInvestimento)}
+          trend={`Meta ${fmt(kpis.metaTotalGasto)} · Pin ${fmt(kpis.pinTotalGasto)}`}
+        />
+        <KPICard
+          icon={<BarChart3 size={18} />}
+          iconBg={lucroUp ? "bg-emerald-50 text-emerald-600" : "bg-red-50 text-red-600"}
+          label="Lucro"
+          value={fmt(kpis.lucro)}
+          trend="Comissão − gasto"
+          up={lucroUp}
+          down={!lucroUp}
+        />
+        <KPICard
+          icon={<TrendingUp size={18} />}
+          iconBg="bg-slate-50 text-slate-700"
+          label="ROI Geral"
+          value={((kpis.roiGeral || 0) * 100).toFixed(2) + "%"}
+          trend={`ROAS ${fmtRoas((kpis.totalInvestimento || 0) > 0 ? (kpis.totalComissao || 0) / kpis.totalInvestimento : 0)}`}
+          up={(kpis.roiGeral || 0) >= 0}
+          down={(kpis.roiGeral || 0) < 0}
+        />
+        <KPICard
+          icon={<ShoppingBag size={18} />}
+          iconBg="bg-orange-50 text-orange-600"
+          label="Vendas"
+          value={fmtNum(kpis.totalVendas)}
+          trend={`Conv. ${fmtPct(kpis.convRate)}`}
+          up
+        />
+        <KPICard
+          icon={<Ticket size={18} />}
+          iconBg="bg-rose-50 text-rose-600"
+          label="Ticket Médio"
+          value={fmt(kpis.ticketMedio)}
+          trend="Fat. Bruto ÷ vendas"
+          up
+        />
       </div>
+
+      <div className="bg-white rounded-lg border border-gray-200 p-3.5 mb-4">
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+          <span className="text-[10px] uppercase tracking-wide text-gray-400 font-medium">
+            Meta mensal — {fmt(settings.metaMensal)}
+          </span>
+          <span className="text-[11px] text-gray-500 font-medium">
+            {Math.round(metaPct * 1000) / 10}% atingido · Faltam {fmt(Math.max((settings.metaMensal || 0) - (kpis.faturamentoBruto || 0), 0))}
+          </span>
+        </div>
+        <div className="h-2 rounded-full overflow-hidden bg-gray-100">
+          <div className="h-full bg-indigo-600" style={{ width: `${metaPct * 100}%` }} />
+        </div>
+        {(settings.impostoMeta > 0 || settings.impostoNf > 0) && (
+          <div className="mt-2 text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1">
+            Impostos ativos: Meta Ads {settings.impostoMeta.toFixed(1)}% · NF {settings.impostoNf.toFixed(1)}% · Total {fmt(kpis.impostoTotal)}
+          </div>
+        )}
+      </div>
+
+      {subIds && subIds.length > 0 && (
+        <div className="bg-white rounded-lg border border-gray-200 overflow-hidden mb-4">
+          <div className="px-4 py-3 border-b border-gray-100">
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+              <h3 className="text-sm font-semibold">Detalhamento por SubID</h3>
+              <span className="text-xs text-gray-400">{subIdsFilteredSorted.length} campanhas</span>
+            </div>
+            <div className="flex flex-wrap items-center gap-3 text-xs">
+              <label className="flex items-center gap-2">
+                <span className="text-gray-500">Ordenar por</span>
+                <select
+                  className="border border-gray-200 rounded px-2 py-1 bg-white"
+                  value={subSortField}
+                  onChange={(e) => setSubSortField(e.target.value)}
+                >
+                  <option value="roi">ROI</option>
+                  <option value="lucro">Lucro</option>
+                  <option value="faturamento">Faturamento</option>
+                  <option value="comissoes">Comissão</option>
+                  <option value="gasto">Gasto</option>
+                  <option value="total_vendas">Total vendas</option>
+                  <option value="batimento">% batimento</option>
+                </select>
+              </label>
+              <button
+                type="button"
+                className="border border-gray-200 rounded px-2 py-1 hover:bg-gray-50"
+                onClick={() => setSubSortDir((d) => (d === "asc" ? "desc" : "asc"))}
+              >
+                {subSortDir === "asc" ? "Asc" : "Desc"}
+              </button>
+              <label className="flex items-center gap-1.5">
+                <input
+                  type="checkbox"
+                  checked={onlyLoss}
+                  onChange={(e) => {
+                    setOnlyLoss(e.target.checked);
+                    if (e.target.checked) setOnlyProfit(false);
+                  }}
+                />
+                <span className="text-gray-600">Só prejuízo</span>
+              </label>
+              <label className="flex items-center gap-1.5">
+                <input
+                  type="checkbox"
+                  checked={onlyProfit}
+                  onChange={(e) => {
+                    setOnlyProfit(e.target.checked);
+                    if (e.target.checked) setOnlyLoss(false);
+                  }}
+                />
+                <span className="text-gray-600">Só lucro</span>
+              </label>
+            </div>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="bg-gray-50 text-gray-500 uppercase text-[10px] tracking-wider">
+                  <th className="text-left px-3 py-2">SubID</th>
+                  <th className="px-2 py-2 text-center">Comissão</th>
+                  <th className="px-2 py-2 text-center">Gasto</th>
+                  <th className="px-2 py-2 text-center">Lucro</th>
+                  <th className="px-2 py-2 text-center">ROI</th>
+                  <th className="px-2 py-2 text-center">Faturamento</th>
+                  <th className="px-2 py-2 text-center">Ticket</th>
+                  <th className="px-2 py-2 text-center">Vendas</th>
+                  <th className="px-2 py-2 text-center">Diretas</th>
+                  <th className="px-2 py-2 text-center">Indiretas</th>
+                  <th className="px-2 py-2 text-center">Itens</th>
+                  <th className="px-2 py-2 text-center">Cliques Ads</th>
+                  <th className="px-2 py-2 text-center">Cliques Shopee</th>
+                  <th className="px-2 py-2 text-center">% Bat.</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-50">
+                {subIdsFilteredSorted.length === 0 ? (
+                  <tr><td colSpan={14} className="px-4 py-8 text-center text-gray-400">Nenhuma campanha com esses filtros</td></tr>
+                ) : subIdsFilteredSorted.map((r) => {
+                  const roiColor = r.roi >= settings.roiMinimo ? "#16A34A" : r.roi >= 0 ? "#D97706" : "#DC2626";
+                  const lucroColor = (r.lucro || 0) >= 0 ? "#16A34A" : "#DC2626";
+                  return (
+                    <tr key={r.id} className="hover:bg-gray-50/50">
+                      <td className="px-3 py-2 font-medium text-gray-900">{r.subid || "—"}</td>
+                      <td className="px-2 py-2 text-center text-emerald-700 font-semibold">{fmt(r.comissoes)}</td>
+                      <td className="px-2 py-2 text-center">{fmt(r.gasto)}</td>
+                      <td className="px-2 py-2 text-center font-semibold" style={{ color: lucroColor }}>{fmt(r.lucro)}</td>
+                      <td className="px-2 py-2 text-center font-bold" style={{ color: roiColor }}>{r.gasto > 0 ? ((r.roi || 0) * 100).toFixed(2) + "%" : "—"}</td>
+                      <td className="px-2 py-2 text-center">{fmt(r.faturamento)}</td>
+                      <td className="px-2 py-2 text-center">{r.ticket_medio > 0 ? fmt(r.ticket_medio) : "—"}</td>
+                      <td className="px-2 py-2 text-center">{fmtNum(r.total_vendas)}</td>
+                      <td className="px-2 py-2 text-center">{fmtNum(r.vendas_diretas)}</td>
+                      <td className="px-2 py-2 text-center">{fmtNum(r.vendas_indiretas)}</td>
+                      <td className="px-2 py-2 text-center">{fmtNum(r.qtd_itens)}</td>
+                      <td className="px-2 py-2 text-center">{fmtNum(r.cliques_anuncio)}</td>
+                      <td className="px-2 py-2 text-center">{fmtNum(r.cliques_shopee)}</td>
+                      <td className="px-2 py-2 text-center">{r.cliques_anuncio > 0 ? ((r.batimento || 0) * 100).toFixed(2) + "%" : "—"}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       <CommissionBreakdown kpis={kpis} />
       <OperationalAlerts alerts={operationalAlerts} />
