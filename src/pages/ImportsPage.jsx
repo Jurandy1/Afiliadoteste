@@ -70,13 +70,16 @@ export default function ImportsPage({ onImportDone }) {
   };
 
   const handleRemoveImport = async (item) => {
-    const ok = window.confirm(`Remover importação de ${TIPO_LABELS[item.tipo] || item.tipo}?`);
+    const ok = window.confirm(
+      `Remover importação de ${TIPO_LABELS[item.tipo] || item.tipo} e limpar dados desse tipo?`,
+    );
     if (!ok) return;
 
     setRemovingId(item.id);
     try {
-      await removerImportacao(item.id);
+      await removerImportacao(item.id, item.tipo);
       setHistory((prev) => prev.filter((h) => h.id !== item.id));
+      onImportDone?.();
     } catch (err) {
       console.error(err);
       setResult({ success: false, error: err.message || "Erro ao remover importação" });

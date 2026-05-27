@@ -19,8 +19,139 @@ export async function getImportacoes() {
   }
 }
 
-export async function removerImportacao(importacaoId) {
+async function deleteCollectionDocs(collectionName) {
+  const snap = await getDocs(collection(db, collectionName));
+  if (snap.empty) return 0;
+
+  let deleted = 0;
+  let batch = writeBatch(db);
+  let count = 0;
+
+  for (const d of snap.docs) {
+    batch.delete(d.ref);
+    deleted++;
+    count++;
+
+    if (count >= 400) {
+      await batch.commit();
+      batch = writeBatch(db);
+      count = 0;
+    }
+  }
+
+  if (count > 0) await batch.commit();
+  return deleted;
+}
+
+async function cleanupImportedDataByTipo(tipo) {
+  if (tipo === "shopee_venda") {
+    return { produtosRemovidos: await deleteCollectionDocs(COLLECTIONS.PRODUTOS) };
+  }
+
+  if (tipo === "shopee_clique") {
+    const cliquesRemovidos = await deleteCollectionDocs(COLLECTIONS.CLIQUES);
+
+    // Limpa cliques agregados dos produtos para evitar conv_rate residual
+    const prodSnap = await getDocs(collection(db, COLLECTIONS.PRODUTOS));
+    if (!prodSnap.empty) {
+      let batch = writeBatch(db);
+      let count = 0;
+      for (const p of prodSnap.docs) {
+        batch.set(p.ref, { cliques: 0 }, { merge: true });
+        count++;
+        if (count >= 400) {
+          await batch.commit();
+          batch = writeBatch(db);
+          count = 0;
+        }
+      }
+      if (count > 0) await batch.commit();
+    }
+    return { cliquesRemovidos };
+  }
+
+  if (tipo === "meta_ads") {
+    const metaRemovidos = await deleteCollectionDocs(COLLECTIONS.META_ADS);
+
+    // Remove vínculos Meta e recalcula investimento com Pinterest remanescente
+    const [prodSnap, pinSnap] = await Promise.all([
+      getDocs(collection(db, COLLECTIONS.PRODUTOS)),
+      getDocs(collection(db, COLLECTIONS.PINTEREST)),
+    ]);
+    const pinIndex = {};
+    pinSnap.docs.forEach((d) => { pinIndex[d.id] = d.data(); });
+
+    if (!prodSnap.empty) {
+      let batch = writeBatch(db);
+      let count = 0;
+      for (const p of prodSnap.docs) {
+        const data = p.data();
+        const pinIds = data.pinterestAdIds || [];
+        const investimentoPin = pinIds.reduce((sum, id) => sum + (pinIndex[id]?.spend || 0), 0);
+        batch.set(
+          p.ref,
+          {
+            metaAdIds: [],
+            investimento: Math.round(investimentoPin * 100) / 100,
+          },
+          { merge: true },
+        );
+        count++;
+        if (count >= 400) {
+          await batch.commit();
+          batch = writeBatch(db);
+          count = 0;
+        }
+      }
+      if (count > 0) await batch.commit();
+    }
+    return { metaRemovidos };
+  }
+
+  if (tipo === "pinterest") {
+    const pinterestRemovidos = await deleteCollectionDocs(COLLECTIONS.PINTEREST);
+
+    // Remove vínculos Pinterest e recalcula investimento com Meta remanescente
+    const [prodSnap, metaSnap] = await Promise.all([
+      getDocs(collection(db, COLLECTIONS.PRODUTOS)),
+      getDocs(collection(db, COLLECTIONS.META_ADS)),
+    ]);
+    const metaIndex = {};
+    metaSnap.docs.forEach((d) => { metaIndex[d.id] = d.data(); });
+
+    if (!prodSnap.empty) {
+      let batch = writeBatch(db);
+      let count = 0;
+      for (const p of prodSnap.docs) {
+        const data = p.data();
+        const metaIds = data.metaAdIds || [];
+        const investimentoMeta = metaIds.reduce((sum, id) => sum + (metaIndex[id]?.valorUsado || 0), 0);
+        batch.set(
+          p.ref,
+          {
+            pinterestAdIds: [],
+            investimento: Math.round(investimentoMeta * 100) / 100,
+          },
+          { merge: true },
+        );
+        count++;
+        if (count >= 400) {
+          await batch.commit();
+          batch = writeBatch(db);
+          count = 0;
+        }
+      }
+      if (count > 0) await batch.commit();
+    }
+    return { pinterestRemovidos };
+  }
+
+  return {};
+}
+
+export async function removerImportacao(importacaoId, tipo) {
   if (!importacaoId) throw new Error("ID da importação inválido");
+  if (tipo) await cleanupImportedDataByTipo(tipo);
   await deleteDoc(doc(db, COLLECTIONS.IMPORTACOES, importacaoId));
 }
 
