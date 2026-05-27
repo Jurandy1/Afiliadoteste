@@ -1,0 +1,92 @@
+// Cole essas regras no Firebase Console → Firestore → Regras
+// São regras de PRODUÇÃO (não de teste)
+
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Produtos ────────────────────────────────────────────────
+    match /produtos/{produtoId} {
+      allow read: if true;
+      allow create: if request.resource.data.keys().hasAny(['nome', 'plataforma'])
+                    && request.resource.data.nome is string
+                    && request.resource.data.nome.size() > 0;
+      allow update: if request.resource.data.diff(resource.data).affectedKeys()
+                      .hasOnly(['nome', 'plataforma', 'categoria', 'loja', 'preco',
+                                'comissao_pct', 'comissao_total', 'link_afiliado',
+                                'vendas', 'cliques', 'impressoes', 'estoque', 'nota',
+                                'investimento', 'gmv', 'conv_rate', 'fonte',
+                                'pedidos_pendentes', 'pedidos_completos',
+                                'pedidos_concluidos', 'pedidos_cancelados', 'canais',
+                                'updatedAt', 'importadoEm']);
+      allow delete: if true;
+    }
+
+    // ── Backups ─────────────────────────────────────────────────
+    match /backups/{backupId} {
+      allow read: if true;
+      allow create: if request.resource.data.keys().hasAny(['nome_variacao']);
+      allow update: if true;
+      allow delete: if true;
+    }
+
+    // ── Produtos Mortos ─────────────────────────────────────────
+    match /mortos/{mortoId} {
+      allow read: if true;
+      allow create: if request.resource.data.keys().hasAny(['nome']);
+      allow update, delete: if true;
+    }
+
+    // ── Cliques Shopee (agregados por Sub_id) ─────────────────
+    match /cliques_shopee/{cliqueId} {
+      allow read: if true;
+      allow create: if request.resource.data.keys().hasAny(['sub_id']);
+      allow update, delete: if true;
+    }
+
+    // ── Meta Ads ────────────────────────────────────────────────
+    match /meta_ads/{adId} {
+      allow read: if true;
+      allow create: if request.resource.data.keys().hasAny(['nomeAnuncio']);
+      allow update, delete: if true;
+    }
+
+    // ── Pinterest Ads ───────────────────────────────────────────
+    match /pinterest_ads/{pinId} {
+      allow read: if true;
+      allow create: if request.resource.data.keys().hasAny(['adName']);
+      allow update, delete: if true;
+    }
+
+    // ── Métricas ────────────────────────────────────────────────
+    match /metricas/{metricaId} {
+      allow read: if true;
+      allow create: if request.resource.data.keys().hasAny(['produtoId']);
+      allow update, delete: if true;
+    }
+
+    // ── Importações (log) ───────────────────────────────────────
+    match /importacoes/{importId} {
+      allow read: if true;
+      allow create: if request.resource.data.keys().hasAny(['tipo', 'status'])
+                    && request.resource.data.tipo is string;
+      allow update: if false;  // logs são imutáveis
+      allow delete: if true;   // pode limpar histórico
+    }
+
+    // ── Alertas ─────────────────────────────────────────────────
+    match /alertas/{alertaId} {
+      allow read: if true;
+      allow create: if request.resource.data.keys().hasAny(['titulo', 'tipo']);
+      allow update: if request.resource.data.diff(resource.data).affectedKeys()
+                      .hasOnly(['lido']);  // só pode marcar como lido
+      allow delete: if true;
+    }
+
+    // ── Bloquear tudo que não foi explicitamente permitido ──────
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

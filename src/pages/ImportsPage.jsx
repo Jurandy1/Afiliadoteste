@@ -1,0 +1,179 @@
+import { useEffect, useState } from "react";
+import { Check, DollarSign, Loader2, MousePointerClick, Target, TrendingUp, X } from "lucide-react";
+import { getImportacoes, importMetaAds, importPinterest, importShopeeClique, importShopeeVenda } from "../services/repositories/importsRepository";
+import Badge from "../components/cards/Badge";
+import ReconcileAdsButton from "../features/imports/ReconcileAdsButton";
+import ReconcileButton from "../features/imports/ReconcileButton";
+import { uploadImportFile } from "../services/firebase/storage";
+import { formatFirestoreDate } from "../utils/dates";
+
+const ZONES = [
+  { id: "shopee_venda", name: "Shopee — Vendas", desc: "Relatório de Comissões", format: ".csv", icon: <DollarSign size={32} className="text-orange-500" />, accept: ".csv" },
+  { id: "shopee_clique", name: "Shopee — Cliques", desc: "Relatório de Cliques", format: ".csv", icon: <MousePointerClick size={32} className="text-red-500" />, accept: ".csv" },
+  { id: "meta_ads", name: "Meta Ads", desc: "Relatório do Gerenciador", format: ".xlsx", icon: <Target size={32} className="text-blue-600" />, accept: ".xlsx,.xls" },
+  { id: "pinterest", name: "Pinterest", desc: "Relatório de Anúncios", format: ".csv", icon: <TrendingUp size={32} className="text-red-600" />, accept: ".csv" },
+];
+
+const TIPO_LABELS = {
+  shopee_venda: "Shopee Vendas",
+  shopee_clique: "Shopee Cliques",
+  meta_ads: "Meta Ads",
+  pinterest: "Pinterest",
+};
+
+export default function ImportsPage({ onImportDone }) {
+  const [uploading, setUploading] = useState(null);
+  const [result, setResult] = useState(null);
+  const [history, setHistory] = useState([]);
+
+  useEffect(() => {
+    getImportacoes().then(setHistory).catch(() => {});
+  }, [result]);
+
+  const handleFile = async (tipo, e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(tipo);
+    setResult(null);
+
+    try {
+      try {
+        await uploadImportFile(file, tipo);
+      } catch (err) {
+        console.warn("Storage:", err.message);
+      }
+
+      const buffer = await file.arrayBuffer();
+      let res;
+      if (tipo === "shopee_venda") res = await importShopeeVenda(buffer);
+      else if (tipo === "shopee_clique") res = await importShopeeClique(buffer);
+      else if (tipo === "meta_ads") res = await importMetaAds(buffer);
+      else if (tipo === "pinterest") res = await importPinterest(buffer);
+
+      setResult({ success: true, tipo, ...res });
+      onImportDone?.();
+    } catch (err) {
+      console.error(err);
+      setResult({ success: false, error: err.message });
+    } finally {
+      setUploading(null);
+      e.target.value = "";
+    }
+  };
+
+  return (
+    <>
+      <div className="bg-white rounded-lg border border-gray-200 p-5 mb-4">
+        <h3 className="text-sm font-semibold mb-1">Importar relatórios</h3>
+        <p className="text-xs text-gray-400 mb-5">
+          Suba os arquivos exportados de cada plataforma. Recomendado: semanal (toda segunda).
+          Após importar, os anúncios são vinculados automaticamente aos produtos pelo Sub_id1.
+        </p>
+
+        <div className="grid grid-cols-4 gap-3 mb-5">
+          {ZONES.map((z) => (
+            <label
+              key={z.id}
+              className={`border-2 border-dashed rounded-lg p-5 text-center cursor-pointer transition-all ${
+                uploading === z.id ? "border-indigo-400 bg-indigo-50" : "border-gray-200 hover:border-indigo-300 hover:bg-indigo-50/30"
+              }`}
+            >
+              <div className="mb-2">{z.icon}</div>
+              <div className="font-semibold text-sm">{z.name}</div>
+              <div className="text-[10px] text-gray-400 mt-1">{z.desc}</div>
+              <div className="text-[10px] text-gray-300 mt-0.5">{z.format}</div>
+              {uploading === z.id ? (
+                <div className="mt-3 text-xs text-indigo-600 flex items-center justify-center gap-2">
+                  <Loader2 size={14} className="animate-spin" /> Processando...
+                </div>
+              ) : (
+                <div className="mt-3 text-xs text-indigo-600 font-medium">Subir arquivo</div>
+              )}
+              <input type="file" accept={z.accept} onChange={(e) => handleFile(z.id, e)} className="hidden" disabled={!!uploading} />
+            </label>
+          ))}
+        </div>
+
+        {result && (
+          <div className={`rounded-lg p-3 text-xs mb-4 ${result.success ? "bg-emerald-50 text-emerald-700 border border-emerald-200" : "bg-red-50 text-red-700 border border-red-200"}`}>
+            {result.success ? (
+              <>
+                <div className="flex items-center gap-2 font-semibold">
+                  <Check size={14} /> Importação concluída!
+                </div>
+                <div className="mt-1">
+                  {result.linhas} linhas processadas
+                  {result.produtos ? ` → ${result.produtos} produtos` : ""}
+                  {result.subIds ? ` → ${result.subIds} sub_ids` : ""}
+                  {result.produtosVinculados != null && result.produtosVinculados > 0 ? ` · ${result.produtosVinculados} produtos vinculados a anúncios` : ""}
+                  {result.produtosAtualizados != null && result.produtosAtualizados > 0 ? ` · ${result.produtosAtualizados} produtos com cliques atualizados` : ""}
+                </div>
+                {result.porReferenciador && (
+                  <div className="mt-1">
+                    Por canal: {Object.entries(result.porReferenciador).map(([k, v]) => `${k}: ${v}`).join(", ")}
+                  </div>
+                )}
+                {result.colunas && (
+                  <div className="mt-1 text-[10px] text-gray-500">
+                    Colunas detectadas: {result.colunas.slice(0, 8).join(", ")}
+                    {result.colunas.length > 8 ? ` +${result.colunas.length - 8} mais` : ""}
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="flex items-center gap-2">
+                <X size={14} /> Erro: {result.error}
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="space-y-0">
+          <ReconcileAdsButton />
+          <ReconcileButton />
+        </div>
+
+        <div className="bg-gray-50 rounded-lg p-3 mt-4 text-xs text-gray-500">
+          <div className="font-semibold text-gray-700 mb-1">Onde exportar cada relatório:</div>
+          <div><strong>Shopee Vendas:</strong> Shopee Afiliados → Relatórios → Comissões → Exportar CSV</div>
+          <div><strong>Shopee Cliques:</strong> Shopee Afiliados → Relatórios → Cliques → Exportar CSV</div>
+          <div><strong>Meta Ads:</strong> Gerenciador de Anúncios → Relatórios → Exportar XLSX</div>
+          <div><strong>Pinterest:</strong> Pinterest Ads → Reports → Export CSV</div>
+          <div className="mt-2 text-[10px] text-indigo-600 font-medium">
+            💡 Encoding automático — o sistema tenta UTF-8, Latin-1 e Windows-1252 para garantir que todos os caracteres especiais sejam lidos corretamente.
+          </div>
+        </div>
+      </div>
+
+      {history.length > 0 && (
+        <div className="bg-white rounded-lg border border-gray-200 p-4">
+          <h3 className="text-sm font-semibold mb-3">Histórico de importações</h3>
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="bg-gray-50 text-gray-400 uppercase text-[10px] tracking-wider">
+                <th className="text-left px-3 py-2">Data</th>
+                <th className="text-left px-3 py-2">Tipo</th>
+                <th className="px-3 py-2">Linhas</th>
+                <th className="px-3 py-2">Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-50">
+              {history.map((h) => (
+                <tr key={h.id}>
+                  <td className="px-3 py-2">{formatFirestoreDate(h.importadoEm)}</td>
+                  <td className="px-3 py-2">
+                    <Badge text={TIPO_LABELS[h.tipo] || h.tipo} variant="Shopee" />
+                  </td>
+                  <td className="px-3 py-2 text-center">{h.linhasProcessadas || 0}</td>
+                  <td className="px-3 py-2 text-center">
+                    <Badge text={h.status === "sucesso" ? "✓ OK" : "✗ Erro"} variant={h.status === "sucesso" ? "Escalando" : "Sem Estoque"} />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </>
+  );
+}
