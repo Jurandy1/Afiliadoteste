@@ -156,6 +156,28 @@ export async function removerImportacao(importacaoId, tipo, modo = null) {
   await deleteDoc(doc(db, COLLECTIONS.IMPORTACOES, importacaoId));
 }
 
+export async function removerHistoricoShopeeVendas() {
+  const snap = await getDocs(query(collection(db, COLLECTIONS.IMPORTACOES), where("tipo", "==", "shopee_venda")));
+  if (snap.empty) return 0;
+
+  let deleted = 0;
+  let batch = writeBatch(db);
+  let count = 0;
+
+  for (const d of snap.docs) {
+    batch.delete(d.ref);
+    deleted++;
+    count++;
+    if (count >= 400) {
+      await batch.commit();
+      batch = writeBatch(db);
+      count = 0;
+    }
+  }
+  if (count > 0) await batch.commit();
+  return deleted;
+}
+
 export async function importShopeeVenda(arrayBufferOrBuffers, options = {}) {
   const buffers = Array.isArray(arrayBufferOrBuffers) ? arrayBufferOrBuffers : [arrayBufferOrBuffers];
   const rows = [];

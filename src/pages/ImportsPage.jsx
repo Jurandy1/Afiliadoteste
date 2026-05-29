@@ -6,6 +6,7 @@ import {
   importPinterest,
   importShopeeClique,
   importShopeeVenda,
+  removerHistoricoShopeeVendas,
   removerImportacao,
 } from "../services/repositories/importsRepository";
 import Badge from "../components/cards/Badge";
@@ -33,6 +34,7 @@ export default function ImportsPage({ onImportDone }) {
   const [result, setResult] = useState(null);
   const [history, setHistory] = useState([]);
   const [removingId, setRemovingId] = useState(null);
+  const [clearingShopeeVendas, setClearingShopeeVendas] = useState(false);
   const [modeByTipo, setModeByTipo] = useState({
     shopee_venda: "replace",
     shopee_clique: "replace",
@@ -112,6 +114,27 @@ export default function ImportsPage({ onImportDone }) {
     }
   };
 
+  const handleClearShopeeVendaHistory = async () => {
+    const ok = window.confirm(
+      "Apagar do histórico TODAS as importações do tipo 'Shopee Vendas' (CSV e API)?\n\nIsso só remove os registros em /importacoes. Não apaga produtos/subid_vendas.",
+    );
+    if (!ok) return;
+
+    setClearingShopeeVendas(true);
+    setResult(null);
+    try {
+      const deleted = await removerHistoricoShopeeVendas();
+      setHistory((prev) => prev.filter((h) => h.tipo !== "shopee_venda"));
+      setResult({ success: true, tipo: "shopee_venda", linhas: 0, produtos: 0, subIds: 0, message: `${deleted} registro(s) removido(s) do histórico.` });
+      onImportDone?.();
+    } catch (err) {
+      console.error(err);
+      setResult({ success: false, error: err.message || "Erro ao limpar histórico de Shopee Vendas" });
+    } finally {
+      setClearingShopeeVendas(false);
+    }
+  };
+
   return (
     <>
       <div className="bg-white rounded-lg border border-gray-200 p-5 mb-4">
@@ -185,6 +208,11 @@ export default function ImportsPage({ onImportDone }) {
                   {result.produtosVinculados != null && result.produtosVinculados > 0 ? ` · ${result.produtosVinculados} produtos vinculados a anúncios` : ""}
                   {result.produtosAtualizados != null && result.produtosAtualizados > 0 ? ` · ${result.produtosAtualizados} produtos com cliques atualizados` : ""}
                 </div>
+                {result.message && (
+                  <div className="mt-1 text-[11px] text-emerald-700">
+                    {result.message}
+                  </div>
+                )}
                 {result.subIdsPersistidos === false && (
                   <div className="mt-1 text-[11px] text-amber-700">
                     Aviso: os agregados por SubID não puderam ser salvos no Firestore.
@@ -230,7 +258,18 @@ export default function ImportsPage({ onImportDone }) {
 
       {history.length > 0 && (
         <div className="bg-white rounded-lg border border-gray-200 p-4">
-          <h3 className="text-sm font-semibold mb-3">Histórico de importações</h3>
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+            <h3 className="text-sm font-semibold">Histórico de importações</h3>
+            <button
+              type="button"
+              onClick={handleClearShopeeVendaHistory}
+              disabled={clearingShopeeVendas}
+              className="inline-flex items-center gap-1 rounded border border-amber-200 px-2 py-1 text-[10px] font-semibold text-amber-700 hover:bg-amber-50 disabled:opacity-50"
+            >
+              {clearingShopeeVendas ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+              Limpar Shopee Vendas
+            </button>
+          </div>
           <table className="w-full text-xs">
             <thead>
               <tr className="bg-gray-50 text-gray-400 uppercase text-[10px] tracking-wider">
