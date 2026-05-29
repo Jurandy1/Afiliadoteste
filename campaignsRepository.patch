@@ -1,0 +1,92 @@
+--- /tmp/campaignsRepository_orig.js	2026-05-28 03:29:04.089490467 +0000
++++ /home/claude/patch/campaignsRepository.js	2026-05-28 03:28:21.485885809 +0000
+@@ -1,9 +1,9 @@
+ /**
+  * campaignsRepository.js — com API automática Meta
+  *
+- * getMetaAds() → busca da API em tempo real
+- * syncMetaAdsToFirestore() → salva no Firestore para histórico
+- * getPinterest() → continua igual (Firestore/upload manual)
++ * getMetaAds() → busca da API em tempo real (com auto-sync a cada 12h)
++ * syncMetaAdsToFirestore() → salva no Firestore + re-vincula produtos por subid
++ * getPinterest() → continua via upload manual
+  */
+ 
+ import {
+@@ -19,20 +19,28 @@
+   !!import.meta.env.VITE_META_AD_ACCOUNT_IDS;
+ 
+ const META_AUTO_SYNC_KEY = "afilia:meta_api_last_sync";
+-const META_AUTO_SYNC_MS = 12 * 60 * 60 * 1000;
++const META_AUTO_SYNC_MS  = 12 * 60 * 60 * 1000; // 12 horas
+ 
++/**
++ * Verifica se é hora de sincronizar e executa se necessário.
++ * Retorna true se uma sincronização foi realizada.
++ */
+ async function maybeAutoSyncMeta(datePreset = "last_30d") {
+-  if (!META_CONFIGURED) return;
++  if (!META_CONFIGURED) return false;
+   try {
+     const last = parseInt(window.localStorage.getItem(META_AUTO_SYNC_KEY) || "0", 10) || 0;
+-    if (Date.now() - last < META_AUTO_SYNC_MS) return;
++    if (Date.now() - last < META_AUTO_SYNC_MS) return false;
++    // Marca antes de executar para evitar loop em erros rápidos
+     window.localStorage.setItem(META_AUTO_SYNC_KEY, String(Date.now()));
+     await syncMetaAdsToFirestore(datePreset);
++    return true;
+   } catch (e) {
+     console.warn("[campaignsRepository] Auto-sync Meta falhou:", e?.message || e);
++    return false;
+   }
+ }
+ 
++/** Busca Meta Ads — tenta auto-sync via API, fallback no Firestore */
+ export async function getMetaAds(importacaoId = null) {
+   await maybeAutoSyncMeta("last_30d");
+ 
+@@ -46,13 +54,21 @@
+   return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+ }
+ 
++/**
++ * Sincroniza API → Firestore.
++ *
++ * Após substituir os docs (novos IDs), re-executa autoLinkAds para atualizar
++ * os metaAdIds nos produtos usando correspondência por subid.
++ * Isso evita que produtos fiquem com metaAdIds obsoletos apontando para
++ * docs que foram deletados.
++ */
+ export async function syncMetaAdsToFirestore(datePreset = "last_30d") {
+   if (!META_CONFIGURED) throw new Error("Credenciais Meta não configuradas no .env");
+ 
+   const { ads, errors } = await fetchAllMetaAdsData(datePreset);
+   if (!ads.length) throw new Error("Nenhum anúncio retornado pela API");
+ 
+-  // Remove dados antigos
++  // Remove docs antigos
+   const oldSnap = await getDocs(collection(db, COLLECTIONS.META_ADS));
+   let batch = writeBatch(db);
+   let count = 0;
+@@ -87,11 +103,20 @@
+     erros:             errors,
+     importadoEm:       serverTimestamp(),
+   });
+-
+   await batch.commit();
++
++  // Re-vincula produtos por subid após substituir os docs da API
++  // (necessário porque os doc IDs mudaram)
++  try {
++    await autoLinkAds();
++  } catch (e) {
++    console.warn("[campaignsRepository] Re-link pós-sync falhou:", e?.message || e);
++  }
++
+   return { sincronizados: ads.length, erros: errors };
+ }
+ 
++/** Pinterest — via upload manual (sem API) */
+ export async function getPinterest(importacaoId = null) {
+   const base = collection(db, COLLECTIONS.PINTEREST);
+   const q    = importacaoId ? query(base, where("importacaoId", "==", importacaoId)) : base;
