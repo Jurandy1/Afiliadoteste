@@ -9,11 +9,13 @@ function classifyStatus(rawStatus) {
     sl.includes("incompleto") ||
     sl.includes("nao pago") ||
     sl.includes("ainda nao pagou") ||
-    sl.includes("nao pagou")
+    sl.includes("nao pagou") ||
+    sl.includes("estornado") ||
+    sl.includes("reembols")
   ) {
     return "cancelada";
   }
-  if (sl.includes("conclu") || sl.includes("complet") || sl.includes("paid")) {
+  if (sl.includes("conclu") || sl.includes("complet") || sl.includes("finaliz") || sl.includes("confirmad")) {
     return "concluida";
   }
   return "pendente";
@@ -160,10 +162,10 @@ export function parseShopeeSalesRows(rows) {
     if (canal) p.canais[canal] = (p.canais[canal] || 0) + 1;
 
     const subIdNorm = normalizeSubId(subId);
-    const subKey = subIdNorm || "__sem_subid__";
+    const subKey = subIdNorm || "missing_subid";
     if (!subIdMap[subKey]) {
       subIdMap[subKey] = {
-        subid: subIdNorm,
+        subid: subIdNorm || "",
         comissoes: 0,
         faturamento: 0,
         vendas_diretas: 0,

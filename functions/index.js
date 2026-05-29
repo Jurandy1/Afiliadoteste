@@ -308,13 +308,13 @@ async function runMetaSync({ datePreset }) {
   return { importacaoId, ads: ads.length, errors };
 }
 
-exports.metaDailySync = onSchedule({ schedule: "every 6 hours", secrets: ["META_ACCESS_TOKEN", "META_AD_ACCOUNT_IDS", "META_APP_ID"] }, async () => {
+exports.metaDailySync = onSchedule({ schedule: "every 6 hours", secrets: ["META_ACCESS_TOKEN", "META_AD_ACCOUNT_IDS"] }, async () => {
   await runMetaSync({ datePreset: "last_30d" });
 });
 
 // A configuração de segredos foi adicionada logo após o onRequest
 exports.metaSyncNow = onRequest(
-  { secrets: ["META_SYNC_SECRET", "META_APP_ID", "META_ACCESS_TOKEN", "META_AD_ACCOUNT_IDS"] },
+  { secrets: ["META_SYNC_SECRET", "META_ACCESS_TOKEN", "META_AD_ACCOUNT_IDS"] },
   async (req, res) => {
     const secret = (process.env.META_SYNC_SECRET || "").trim();
     const provided = String(req.get("authorization") || "").trim();

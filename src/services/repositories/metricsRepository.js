@@ -108,7 +108,7 @@ export async function getDashboardData(settings = {}) {
 
   const vendasBySubId = {};
   effectiveSubIdVendas.forEach((v) => {
-    const key = v.id || (v.subid || "__sem_subid__");
+    const key = v.id || (v.subid || "missing_subid");
     vendasBySubId[key] = v;
   });
 
@@ -121,7 +121,7 @@ export async function getDashboardData(settings = {}) {
 
   let subIds = [...allSubIds].map((id) => {
     const v   = vendasBySubId[id] || {};
-    const sid = v.subid ?? (id === "__sem_subid__" ? "" : id);
+    const sid = v.subid ?? (id === "missing_subid" ? "" : id);
     const gastoAds  = (metaBySubId[sid]?.gasto           || 0) + (pinBySubId[sid]?.gasto           || 0);
     const cliquesAds = (metaBySubId[sid]?.cliques_anuncio || 0) + (pinBySubId[sid]?.cliques_anuncio || 0);
     const clShopee  = sid ? (cliquesBySubId[sid] || 0) : 0;

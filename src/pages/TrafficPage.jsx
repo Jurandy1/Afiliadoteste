@@ -2,12 +2,28 @@ import { useEffect, useState, useMemo } from "react";
 import {
   Target, TrendingUp, Zap, ChevronDown, ChevronUp,
   AlertTriangle, CheckCircle, Info, Settings,
-  BarChart2, Eye, Lightbulb, Activity,
+  BarChart2, Eye, Lightbulb, Activity, Search, RefreshCw, Clock3,
 } from "lucide-react";
 import { getMetaAds, getMetaDemographics, getPinterest } from "../services/repositories/campaignsRepository";
+import { getImportacoes } from "../services/repositories/importsRepository";
 import { fmt, fmtNum } from "../utils/formatters";
 import LoadingSpinner from "../components/layout/LoadingSpinner";
 import Badge from "../components/cards/Badge";
+import ChartCanvas from "../components/charts/ChartCanvas";
+
+function toMillis(ts) {
+  if (!ts) return 0;
+  if (typeof ts === "number") return ts;
+  if (typeof ts?.toMillis === "function") return ts.toMillis();
+  if (typeof ts?.seconds === "number") return ts.seconds * 1000;
+  return 0;
+}
+
+function fmtDate(ts) {
+  const ms = toMillis(ts);
+  if (!ms) return "—";
+  return new Date(ms).toLocaleString("pt-BR");
+}
 
 // ═══════════════════════════════════════════════════════════════════
 // THRESHOLDS — editáveis pelo usuário no painel de configuração
@@ -719,6 +735,28 @@ function MetaDemographicsPanel() {
   const ageGender = data?.ageGender || [];
   const region = data?.region || [];
 
+  const ageIndex = {};
+  const genderIndex = {};
+  ageGender.forEach((r) => {
+    const age = String(r.age || "—");
+    const gender = String(r.gender || "unknown");
+    const spend = r.spend || 0;
+    if (!ageIndex[age]) ageIndex[age] = { total: 0, male: 0, female: 0, unknown: 0 };
+    ageIndex[age].total += spend;
+    if (gender === "male") ageIndex[age].male += spend;
+    else if (gender === "female") ageIndex[age].female += spend;
+    else ageIndex[age].unknown += spend;
+    genderIndex[gender] = (genderIndex[gender] || 0) + spend;
+  });
+
+  const ageKeys = Object.keys(ageIndex).sort((a, b) => {
+    const na = parseInt(String(a).split("-")[0], 10);
+    const nb = parseInt(String(b).split("-")[0], 10);
+    if (Number.isFinite(na) && Number.isFinite(nb)) return na - nb;
+    return String(a).localeCompare(String(b));
+  });
+  const topRegions = [...region].sort((a, b) => (b.spend || 0) - (a.spend || 0)).slice(0, 10);
+
   return (
     <div className="bg-white rounded-lg border border-gray-200 overflow-hidden mb-4">
       <div className="px-4 py-3 border-b border-gray-100 flex flex-wrap items-center gap-2">
@@ -757,32 +795,61 @@ function MetaDemographicsPanel() {
             {ageGender.length === 0 ? (
               <div className="p-4 text-center text-gray-400 text-xs">Sem dados.</div>
             ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-xs">
-                  <thead>
-                    <tr className="bg-white text-gray-400 uppercase text-[10px] tracking-wider">
-                      <th className="text-left px-3 py-2">Idade</th>
-                      <th className="text-left px-2 py-2">Sexo</th>
-                      <th className="px-2 py-2 text-center">Gasto</th>
-                      <th className="px-2 py-2 text-center">Imp.</th>
-                      <th className="px-2 py-2 text-center">Cliques</th>
-                      <th className="px-2 py-2 text-center">Alcance</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-50">
-                    {ageGender.slice(0, 20).map((r) => (
-                      <tr key={`${r.age}-${r.gender}`} className="hover:bg-gray-50/50">
-                        <td className="px-3 py-2 font-medium">{r.age}</td>
-                        <td className="px-2 py-2 text-gray-600">{r.generoLabel || r.gender}</td>
-                        <td className="px-2 py-2 text-center font-semibold">{fmt(r.spend)}</td>
-                        <td className="px-2 py-2 text-center">{fmtNum(r.impressions)}</td>
-                        <td className="px-2 py-2 text-center">{fmtNum(r.clicks)}</td>
-                        <td className="px-2 py-2 text-center">{fmtNum(r.reach)}</td>
+              <>
+                <div className="p-3">
+                  <ChartCanvas
+                    type="bar"
+                    height={220}
+                    data={{
+                      labels: ageKeys.slice(0, 10),
+                      datasets: [
+                        { label: "Feminino", data: ageKeys.slice(0, 10).map((k) => Math.round(ageIndex[k]?.female || 0)), backgroundColor: "#6366F1", borderRadius: 6 },
+                        { label: "Masculino", data: ageKeys.slice(0, 10).map((k) => Math.round(ageIndex[k]?.male || 0)), backgroundColor: "#10B981", borderRadius: 6 },
+                        { label: "Outros", data: ageKeys.slice(0, 10).map((k) => Math.round(ageIndex[k]?.unknown || 0)), backgroundColor: "#CBD5E1", borderRadius: 6 },
+                      ],
+                    }}
+                    options={{
+                      responsive: true,
+                      maintainAspectRatio: false,
+                      plugins: { legend: { position: "bottom", labels: { boxWidth: 10, font: { size: 10 } } } },
+                      scales: {
+                        x: { stacked: true, grid: { display: false }, ticks: { font: { size: 10 } } },
+                        y: { stacked: true, grid: { color: "#F1F5F9" }, ticks: { callback: (v) => "R$" + v, font: { size: 10 } } },
+                      },
+                    }}
+                  />
+                  <div className="mt-2 text-[10px] text-gray-400">
+                    Gasto por faixa etária (top 10) · Feminino {fmt(genderIndex.female || 0)} · Masculino {fmt(genderIndex.male || 0)}
+                  </div>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="bg-white text-gray-400 uppercase text-[10px] tracking-wider">
+                        <th className="text-left px-3 py-2">Idade</th>
+                        <th className="text-left px-2 py-2">Sexo</th>
+                        <th className="px-2 py-2 text-center">Gasto</th>
+                        <th className="px-2 py-2 text-center">Imp.</th>
+                        <th className="px-2 py-2 text-center">Cliques</th>
+                        <th className="px-2 py-2 text-center">Alcance</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                    </thead>
+                    <tbody className="divide-y divide-gray-50">
+                      {ageGender.slice(0, 20).map((r) => (
+                        <tr key={`${r.age}-${r.gender}`} className="hover:bg-gray-50/50">
+                          <td className="px-3 py-2 font-medium">{r.age}</td>
+                          <td className="px-2 py-2 text-gray-600">{r.generoLabel || r.gender}</td>
+                          <td className="px-2 py-2 text-center font-semibold">{fmt(r.spend)}</td>
+                          <td className="px-2 py-2 text-center">{fmtNum(r.impressions)}</td>
+                          <td className="px-2 py-2 text-center">{fmtNum(r.clicks)}</td>
+                          <td className="px-2 py-2 text-center">{fmtNum(r.reach)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
             )}
           </div>
 
@@ -794,30 +861,55 @@ function MetaDemographicsPanel() {
             {region.length === 0 ? (
               <div className="p-4 text-center text-gray-400 text-xs">Sem dados.</div>
             ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-xs">
-                  <thead>
-                    <tr className="bg-white text-gray-400 uppercase text-[10px] tracking-wider">
-                      <th className="text-left px-3 py-2">Região</th>
-                      <th className="px-2 py-2 text-center">Gasto</th>
-                      <th className="px-2 py-2 text-center">Imp.</th>
-                      <th className="px-2 py-2 text-center">Cliques</th>
-                      <th className="px-2 py-2 text-center">Alcance</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-50">
-                    {region.slice(0, 20).map((r) => (
-                      <tr key={r.region} className="hover:bg-gray-50/50">
-                        <td className="px-3 py-2 font-medium">{r.region}</td>
-                        <td className="px-2 py-2 text-center font-semibold">{fmt(r.spend)}</td>
-                        <td className="px-2 py-2 text-center">{fmtNum(r.impressions)}</td>
-                        <td className="px-2 py-2 text-center">{fmtNum(r.clicks)}</td>
-                        <td className="px-2 py-2 text-center">{fmtNum(r.reach)}</td>
+              <>
+                <div className="p-3">
+                  <ChartCanvas
+                    type="bar"
+                    height={220}
+                    data={{
+                      labels: topRegions.map((r) => String(r.region || "—").substring(0, 16)),
+                      datasets: [{ data: topRegions.map((r) => Math.round(r.spend || 0)), backgroundColor: "#2563EB", borderRadius: 6 }],
+                    }}
+                    options={{
+                      responsive: true,
+                      maintainAspectRatio: false,
+                      plugins: { legend: { display: false } },
+                      scales: {
+                        x: { grid: { display: false }, ticks: { font: { size: 10 } } },
+                        y: { grid: { color: "#F1F5F9" }, ticks: { callback: (v) => "R$" + v, font: { size: 10 } } },
+                      },
+                    }}
+                  />
+                  <div className="mt-2 text-[10px] text-gray-400">
+                    Gasto por região (top 10)
+                  </div>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="bg-white text-gray-400 uppercase text-[10px] tracking-wider">
+                        <th className="text-left px-3 py-2">Região</th>
+                        <th className="px-2 py-2 text-center">Gasto</th>
+                        <th className="px-2 py-2 text-center">Imp.</th>
+                        <th className="px-2 py-2 text-center">Cliques</th>
+                        <th className="px-2 py-2 text-center">Alcance</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                    </thead>
+                    <tbody className="divide-y divide-gray-50">
+                      {region.slice(0, 20).map((r) => (
+                        <tr key={r.region} className="hover:bg-gray-50/50">
+                          <td className="px-3 py-2 font-medium">{r.region}</td>
+                          <td className="px-2 py-2 text-center font-semibold">{fmt(r.spend)}</td>
+                          <td className="px-2 py-2 text-center">{fmtNum(r.impressions)}</td>
+                          <td className="px-2 py-2 text-center">{fmtNum(r.clicks)}</td>
+                          <td className="px-2 py-2 text-center">{fmtNum(r.reach)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
             )}
           </div>
         </div>
@@ -834,12 +926,42 @@ export default function TrafficPage() {
   const [pins,       setPins]       = useState([]);
   const [loading,    setLoading]    = useState(true);
   const [thresholds, setThresholds] = useState(DEFAULT_THRESHOLDS);
+  const [metaError,  setMetaError]  = useState(null);
+  const [pinsError,  setPinsError]  = useState(null);
+  const [metaSync,   setMetaSync]   = useState(null);
+  const [reloadNonce, setReloadNonce] = useState(0);
+  const [metaQuery, setMetaQuery] = useState("");
+  const [metaStatusFilter, setMetaStatusFilter] = useState("all");
+  const [metaSort, setMetaSort] = useState("gasto_desc");
 
   useEffect(() => {
-    Promise.all([getMetaAds(), getPinterest()])
-      .then(([m, p]) => { setMeta(m); setPins(p); })
-      .finally(() => setLoading(false));
-  }, []);
+    let alive = true;
+    setLoading(true);
+    setMetaError(null);
+    setPinsError(null);
+
+    Promise.allSettled([getMetaAds(), getPinterest(), getImportacoes()])
+      .then((results) => {
+        if (!alive) return;
+
+        const [metaRes, pinRes, impRes] = results;
+
+        if (metaRes.status === "fulfilled") setMeta(metaRes.value || []);
+        else { setMeta([]); setMetaError(metaRes.reason); }
+
+        if (pinRes.status === "fulfilled") setPins(pinRes.value || []);
+        else { setPins([]); setPinsError(pinRes.reason); }
+
+        const importacoes = impRes.status === "fulfilled" ? (impRes.value || []) : [];
+        const latest = [...importacoes]
+          .filter((i) => i?.tipo === "meta_ads" && i?.fonte === "api_backend")
+          .sort((a, b) => (b?.importadoEm?.seconds || 0) - (a?.importadoEm?.seconds || 0))[0] || null;
+        setMetaSync(latest);
+      })
+      .finally(() => { if (alive) setLoading(false); });
+
+    return () => { alive = false; };
+  }, [reloadNonce]);
 
   if (loading) return <LoadingSpinner label="Carregando..." className="py-8" />;
 
@@ -853,8 +975,100 @@ export default function TrafficPage() {
   const ctrGlobal    = metaImp     > 0 ? (metaCliques / metaImp) * 100 : 0;
   const cpmMeta      = metaImp     > 0 ? (metaTotal / metaImp) * 1000 : 0;
 
+  const metaLatestMs = meta.reduce((max, m) => Math.max(max, toMillis(m.importadoEm) || toMillis(m.updatedAt)), 0);
+  const pinsLatestMs = pins.reduce((max, p) => Math.max(max, toMillis(p.importadoEm) || toMillis(p.updatedAt)), 0);
+  const metaActive = meta.filter((m) => String(m.status || "").toLowerCase().includes("ativo")).length;
+  const metaPaused = meta.length - metaActive;
+  const q = metaQuery.trim().toLowerCase();
+  const metaFiltered = [...meta]
+    .filter((m) => {
+      if (!q) return true;
+      const hay = `${m.nomeAnuncio || ""} ${m.campanha || ""} ${m.conjuntoAnuncios || ""} ${m.subid || ""}`.toLowerCase();
+      return hay.includes(q);
+    })
+    .filter((m) => {
+      if (metaStatusFilter === "all") return true;
+      const st = String(m.status || "").toLowerCase();
+      if (metaStatusFilter === "active") return st.includes("ativo");
+      if (metaStatusFilter === "paused") return !st.includes("ativo");
+      return true;
+    })
+    .sort((a, b) => {
+      if (metaSort === "gasto_desc") return (b.valorUsado || 0) - (a.valorUsado || 0);
+      if (metaSort === "cliques_desc") return (b.resultados || 0) - (a.resultados || 0);
+      if (metaSort === "ctr_desc") {
+        const ca = (a.impressoes || 0) > 0 ? (a.resultados || 0) / (a.impressoes || 1) : 0;
+        const cb = (b.impressoes || 0) > 0 ? (b.resultados || 0) / (b.impressoes || 1) : 0;
+        return cb - ca;
+      }
+      if (metaSort === "cpc_asc") {
+        const ca = (a.resultados || 0) > 0 ? (a.valorUsado || 0) / (a.resultados || 1) : Number.POSITIVE_INFINITY;
+        const cb = (b.resultados || 0) > 0 ? (b.valorUsado || 0) / (b.resultados || 1) : Number.POSITIVE_INFINITY;
+        return ca - cb;
+      }
+      return 0;
+    });
+
+  const metaFilteredTotal = metaFiltered.reduce((s, m) => s + (m.valorUsado || 0), 0);
+  const metaFilteredCliques = metaFiltered.reduce((s, m) => s + (m.resultados || 0), 0);
+  const metaFilteredImp = metaFiltered.reduce((s, m) => s + (m.impressoes || 0), 0);
+  const metaFilteredCtr = metaFilteredImp > 0 ? (metaFilteredCliques / metaFilteredImp) * 100 : 0;
+  const metaFilteredCpc = metaFilteredCliques > 0 ? metaFilteredTotal / metaFilteredCliques : 0;
+  const metaFilteredCpm = metaFilteredImp > 0 ? (metaFilteredTotal / metaFilteredImp) * 1000 : 0;
+
+  const topMetaBySpend = [...meta]
+    .sort((a, b) => (b.valorUsado || 0) - (a.valorUsado || 0))
+    .slice(0, 10);
+  const topMetaByClicks = [...meta]
+    .sort((a, b) => (b.resultados || 0) - (a.resultados || 0))
+    .slice(0, 10);
+
   return (
     <>
+      <div className="bg-white rounded-lg border border-gray-200 p-4 mb-4">
+        <div className="flex flex-wrap items-start gap-3">
+          <div className="flex items-start gap-3">
+            <div className="h-9 w-9 rounded-lg bg-indigo-50 text-indigo-700 flex items-center justify-center shrink-0">
+              <Activity size={16} />
+            </div>
+            <div>
+              <div className="text-sm font-semibold">Fonte de dados</div>
+              <div className="text-[11px] text-gray-500">
+                Meta Ads é atualizado pelo backend e salvo no Firestore. Pinterest continua via importação.
+              </div>
+            </div>
+          </div>
+
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-2 rounded-md border border-gray-200 px-3 py-2 bg-white">
+              <div className="text-[10px] uppercase tracking-wide text-gray-400 font-semibold">Meta</div>
+              <Badge text={metaError ? "Erro" : meta.length ? "OK" : "Vazio"} variant={metaError ? "Sem Estoque" : meta.length ? "Escalando" : "Pausado"} />
+              <div className="text-[11px] text-gray-500 flex items-center gap-1">
+                <Clock3 size={12} className="text-gray-400" />
+                {metaSync?.importadoEm ? fmtDate(metaSync.importadoEm) : metaLatestMs ? fmtDate(metaLatestMs) : "—"}
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 rounded-md border border-gray-200 px-3 py-2 bg-white">
+              <div className="text-[10px] uppercase tracking-wide text-gray-400 font-semibold">Pinterest</div>
+              <Badge text={pinsError ? "Erro" : pins.length ? "OK" : "Vazio"} variant={pinsError ? "Sem Estoque" : pins.length ? "Escalando" : "Pausado"} />
+              <div className="text-[11px] text-gray-500 flex items-center gap-1">
+                <Clock3 size={12} className="text-gray-400" />
+                {pinsLatestMs ? fmtDate(pinsLatestMs) : "—"}
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setReloadNonce((n) => n + 1)}
+              className="inline-flex items-center gap-2 rounded-md border border-gray-200 px-3 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50"
+            >
+              <RefreshCw size={14} /> Atualizar
+            </button>
+          </div>
+        </div>
+      </div>
+
       {/* KPI strip — métricas por camada de funil (topo → fundo) */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-4">
         {[
@@ -879,19 +1093,143 @@ export default function TrafficPage() {
       {/* Painel de análise automática */}
       <AnalystPanel meta={meta} pins={pins} thresholds={thresholds} />
 
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+        <div className="bg-white rounded-lg border border-gray-200 p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <Eye size={14} className="text-indigo-600" />
+            <div className="text-sm font-semibold">Top anúncios — gasto</div>
+            <div className="ml-auto text-[10px] text-gray-400">{meta.length} anúncios</div>
+          </div>
+          {topMetaBySpend.length === 0 ? (
+            <div className="text-center text-xs text-gray-400 py-8">Sem dados.</div>
+          ) : (
+            <ChartCanvas
+              type="bar"
+              height={Math.min(320, 70 + topMetaBySpend.length * 22)}
+              data={{
+                labels: topMetaBySpend.map((m) => (m.nomeAnuncio || "—").substring(0, 26)),
+                datasets: [{ data: topMetaBySpend.map((m) => Math.round(m.valorUsado || 0)), backgroundColor: "#4F46E5", borderRadius: 6 }],
+              }}
+              options={{
+                indexAxis: "y",
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { display: false } },
+                scales: {
+                  x: { ticks: { callback: (v) => "R$" + v }, grid: { color: "#F1F5F9" } },
+                  y: { grid: { display: false }, ticks: { font: { size: 11 } } },
+                },
+              }}
+            />
+          )}
+        </div>
+
+        <div className="bg-white rounded-lg border border-gray-200 p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <Zap size={14} className="text-emerald-600" />
+            <div className="text-sm font-semibold">Top anúncios — cliques</div>
+            <div className="ml-auto text-[10px] text-gray-400">
+              {fmtNum(metaCliques)} cliques · {fmt(cpcMeta)} CPC médio
+            </div>
+          </div>
+          {topMetaByClicks.length === 0 ? (
+            <div className="text-center text-xs text-gray-400 py-8">Sem dados.</div>
+          ) : (
+            <ChartCanvas
+              type="bar"
+              height={Math.min(320, 70 + topMetaByClicks.length * 22)}
+              data={{
+                labels: topMetaByClicks.map((m) => (m.nomeAnuncio || "—").substring(0, 26)),
+                datasets: [{ data: topMetaByClicks.map((m) => Math.round(m.resultados || 0)), backgroundColor: "#10B981", borderRadius: 6 }],
+              }}
+              options={{
+                indexAxis: "y",
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { display: false } },
+                scales: {
+                  x: { grid: { color: "#F1F5F9" } },
+                  y: { grid: { display: false }, ticks: { font: { size: 11 } } },
+                },
+              }}
+            />
+          )}
+        </div>
+      </div>
+
       <MetaDemographicsPanel />
 
       {/* Tabela Meta Ads com AIDA score por linha */}
       <div className="bg-white rounded-lg border border-gray-200 overflow-hidden mb-4">
-        <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-2">
-          <Target size={14} className="text-blue-600" />
-          <h3 className="text-sm font-semibold">Meta Ads</h3>
-          <span className="text-[10px] text-gray-400 ml-auto">
-            {meta.length} anúncios · {fmt(metaTotal)} · {fmtNum(metaCliques)} cliques
-          </span>
+        <div className="px-4 py-3 border-b border-gray-100">
+          <div className="flex flex-wrap items-center gap-2">
+            <Target size={14} className="text-blue-600" />
+            <h3 className="text-sm font-semibold">Meta Ads</h3>
+            <span className="text-[10px] text-gray-400">
+              {meta.length} anúncios · {metaActive} ativos · {metaPaused} pausados
+            </span>
+            <span className="text-[10px] text-gray-400 ml-auto">
+              {fmt(metaTotal)} · {fmtNum(metaCliques)} cliques
+            </span>
+          </div>
+
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <div className="relative">
+              <Search size={14} className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-400" />
+              <input
+                value={metaQuery}
+                onChange={(e) => setMetaQuery(e.target.value)}
+                placeholder="Buscar anúncio, campanha, conjunto, subid..."
+                className="pl-8 pr-3 py-2 text-xs border border-gray-200 rounded-md w-[280px] bg-white"
+              />
+            </div>
+
+            <select
+              value={metaStatusFilter}
+              onChange={(e) => setMetaStatusFilter(e.target.value)}
+              className="text-xs border border-gray-200 rounded-md px-2 py-2 bg-white"
+            >
+              <option value="all">Status: todos</option>
+              <option value="active">Status: ativos</option>
+              <option value="paused">Status: pausados</option>
+            </select>
+
+            <select
+              value={metaSort}
+              onChange={(e) => setMetaSort(e.target.value)}
+              className="text-xs border border-gray-200 rounded-md px-2 py-2 bg-white"
+            >
+              <option value="gasto_desc">Ordenar: gasto (↓)</option>
+              <option value="cliques_desc">Ordenar: cliques (↓)</option>
+              <option value="ctr_desc">Ordenar: CTR (↓)</option>
+              <option value="cpc_asc">Ordenar: CPC (↑)</option>
+            </select>
+
+            <div className="ml-auto text-[10px] text-gray-400">
+              {metaFiltered.length} exibidos
+            </div>
+          </div>
         </div>
-        {meta.length === 0 ? (
-          <div className="p-8 text-center text-gray-400 text-xs">Importe o XLSX do Gerenciador de Anúncios Meta.</div>
+        {metaError ? (
+          <div className="p-4 text-xs text-red-700 bg-red-50 border-b border-red-100">
+            Erro ao carregar Meta Ads: {String(metaError?.message || metaError)}
+          </div>
+        ) : meta.length === 0 ? (
+          <div className="p-6 text-center text-gray-400 text-xs">
+            <div>Nenhum dado de Meta Ads encontrado.</div>
+            {metaSync?.importadoEm?.seconds ? (
+              <div className="mt-1">
+                Última sincronização automática: {new Date(metaSync.importadoEm.seconds * 1000).toLocaleString("pt-BR")}
+                {(metaSync.linhasProcessadas || 0) === 0 && (metaSync.erros || []).length
+                  ? ` · Erros: ${metaSync.erros.slice(0, 2).join(" | ")}`
+                  : ""}
+              </div>
+            ) : (
+              <div className="mt-1">
+                Se a sincronização automática do Meta não estiver configurada no backend, use a tela Importar para subir o XLSX.
+              </div>
+            )}
+          </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
@@ -910,7 +1248,7 @@ export default function TrafficPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
-                {meta.map((m) => {
+                {metaFiltered.map((m) => {
                   const ctr  = ((m.ctr || 0) * 100);
                   const cpc  = (m.resultados || 0) > 0 ? (m.valorUsado || 0) / (m.resultados || 1) : 0;
                   const cpm  = (m.impressoes || 0) > 0 ? ((m.valorUsado || 0) / (m.impressoes || 1)) * 1000 : 0;
@@ -937,12 +1275,12 @@ export default function TrafficPage() {
               <tfoot>
                 <tr className="bg-gray-50 font-semibold text-xs border-t border-gray-200">
                   <td className="px-3 py-2" colSpan={2}>TOTAL</td>
-                  <td className="px-2 py-2 text-center">{fmt(metaTotal)}</td>
-                  <td className="px-2 py-2 text-center">{fmtNum(metaImp)}</td>
-                  <td className="px-2 py-2 text-center">{fmtNum(metaCliques)}</td>
-                  <td className="px-2 py-2 text-center">{metaImp>0?ctrGlobal.toFixed(2)+"%":"—"}</td>
-                  <td className="px-2 py-2 text-center">{fmt(cpcMeta)}</td>
-                  <td className="px-2 py-2 text-center">{fmt(cpmMeta)}</td>
+                  <td className="px-2 py-2 text-center">{fmt(metaFilteredTotal)}</td>
+                  <td className="px-2 py-2 text-center">{fmtNum(metaFilteredImp)}</td>
+                  <td className="px-2 py-2 text-center">{fmtNum(metaFilteredCliques)}</td>
+                  <td className="px-2 py-2 text-center">{metaFilteredImp > 0 ? metaFilteredCtr.toFixed(2) + "%" : "—"}</td>
+                  <td className="px-2 py-2 text-center">{fmt(metaFilteredCpc)}</td>
+                  <td className="px-2 py-2 text-center">{fmt(metaFilteredCpm)}</td>
                   <td colSpan={2} />
                 </tr>
               </tfoot>
@@ -960,8 +1298,14 @@ export default function TrafficPage() {
             {pins.length} pins · {fmt(pinTotal)} · {fmtNum(pinCliques)} cliques
           </span>
         </div>
-        {pins.length === 0 ? (
-          <div className="p-8 text-center text-gray-400 text-xs">Importe o CSV do Pinterest Ads.</div>
+        {pinsError ? (
+          <div className="p-4 text-xs text-red-700 bg-red-50 border-b border-red-100">
+            Erro ao carregar Pinterest: {String(pinsError?.message || pinsError)}
+          </div>
+        ) : pins.length === 0 ? (
+          <div className="p-8 text-center text-gray-400 text-xs">
+            Sem dados de Pinterest ainda. Importe o CSV do Pinterest Ads na tela Importar.
+          </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-xs">

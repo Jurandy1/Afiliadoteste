@@ -34,8 +34,8 @@ export default function ImportsPage({ onImportDone }) {
   const [history, setHistory] = useState([]);
   const [removingId, setRemovingId] = useState(null);
   const [modeByTipo, setModeByTipo] = useState({
-    shopee_venda: "append",
-    shopee_clique: "append",
+    shopee_venda: "replace",
+    shopee_clique: "replace",
     meta_ads: "replace",
     pinterest: "replace",
   });
@@ -122,40 +122,53 @@ export default function ImportsPage({ onImportDone }) {
         </p>
 
         <div className="grid grid-cols-4 gap-3 mb-5">
-          {ZONES.map((z) => (
-            <label
-              key={z.id}
-              className={`border-2 border-dashed rounded-lg p-5 text-center cursor-pointer transition-all ${
-                uploading === z.id ? "border-indigo-400 bg-indigo-50" : "border-gray-200 hover:border-indigo-300 hover:bg-indigo-50/30"
-              }`}
-            >
-              <div className="mb-2">{z.icon}</div>
-              <div className="font-semibold text-sm">{z.name}</div>
-              <div className="text-[10px] text-gray-400 mt-1">{z.desc}</div>
-              {(z.id === "shopee_venda" || z.id === "shopee_clique") && (
-                <div className="mt-2 flex items-center justify-center">
-                  <select
-                    value={modeByTipo[z.id] || "replace"}
-                    onChange={(e) => setModeByTipo((prev) => ({ ...prev, [z.id]: e.target.value }))}
-                    className="text-[10px] border border-gray-200 rounded-md px-2 py-1 bg-white"
-                    disabled={!!uploading}
-                  >
-                    <option value="append">Somar (recomendado)</option>
-                    <option value="replace">Substituir</option>
-                  </select>
-                </div>
-              )}
-              <div className="text-[10px] text-gray-300 mt-0.5">{z.format}</div>
-              {uploading === z.id ? (
-                <div className="mt-3 text-xs text-indigo-600 flex items-center justify-center gap-2">
-                  <Loader2 size={14} className="animate-spin" /> Processando...
-                </div>
-              ) : (
-                <div className="mt-3 text-xs text-indigo-600 font-medium">Subir arquivo</div>
-              )}
-              <input type="file" accept={z.accept} multiple onChange={(e) => handleFile(z.id, e)} className="hidden" disabled={!!uploading} />
-            </label>
-          ))}
+          {ZONES.map((z) => {
+            const inputId = `import_${z.id}`;
+            return (
+              <div key={z.id}>
+                <label
+                  htmlFor={inputId}
+                  className={`border-2 border-dashed rounded-lg p-5 text-center cursor-pointer transition-all block ${
+                    uploading === z.id ? "border-indigo-400 bg-indigo-50" : "border-gray-200 hover:border-indigo-300 hover:bg-indigo-50/30"
+                  }`}
+                >
+                  <div className="mb-2">{z.icon}</div>
+                  <div className="font-semibold text-sm">{z.name}</div>
+                  <div className="text-[10px] text-gray-400 mt-1">{z.desc}</div>
+                  {(z.id === "shopee_venda" || z.id === "shopee_clique") && (
+                    <div className="mt-2 flex items-center justify-center">
+                      <select
+                        value={modeByTipo[z.id] || "replace"}
+                        onChange={(e) => setModeByTipo((prev) => ({ ...prev, [z.id]: e.target.value }))}
+                        className="text-[10px] border border-gray-200 rounded-md px-2 py-1 bg-white"
+                        disabled={!!uploading}
+                      >
+                        <option value="replace">Substituir (recomendado)</option>
+                        <option value="append">Somar (apenas sem sobreposição)</option>
+                      </select>
+                    </div>
+                  )}
+                  <div className="text-[10px] text-gray-300 mt-0.5">{z.format}</div>
+                  {uploading === z.id ? (
+                    <div className="mt-3 text-xs text-indigo-600 flex items-center justify-center gap-2">
+                      <Loader2 size={14} className="animate-spin" /> Processando...
+                    </div>
+                  ) : (
+                    <div className="mt-3 text-xs text-indigo-600 font-medium">Subir arquivo</div>
+                  )}
+                </label>
+                <input
+                  id={inputId}
+                  type="file"
+                  accept={z.accept}
+                  multiple
+                  onChange={(e) => handleFile(z.id, e)}
+                  className="sr-only"
+                  disabled={!!uploading}
+                />
+              </div>
+            );
+          })}
         </div>
 
         {result && (
