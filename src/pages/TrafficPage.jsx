@@ -4,26 +4,22 @@ import {
   AlertTriangle, CheckCircle, Info, Settings,
   BarChart2, Eye, Lightbulb, Activity, Search, RefreshCw, Clock3,
 } from "lucide-react";
-import { getMetaAds, getMetaDemographics, getPinterest } from "../services/repositories/campaignsRepository";
-import { getImportacoes } from "../services/repositories/importsRepository";
+import { getMetaDemographics } from "../services/repositories/campaignsRepository";
 import { fmt, fmtNum } from "../utils/formatters";
 import LoadingSpinner from "../components/layout/LoadingSpinner";
 import Badge from "../components/cards/Badge";
 import ChartCanvas from "../components/charts/ChartCanvas";
-
-function toMillis(ts) {
-  if (!ts) return 0;
-  if (typeof ts === "number") return ts;
-  if (typeof ts?.toMillis === "function") return ts.toMillis();
-  if (typeof ts?.seconds === "number") return ts.seconds * 1000;
-  return 0;
-}
-
-function fmtDate(ts) {
-  const ms = toMillis(ts);
-  if (!ms) return "—";
-  return new Date(ms).toLocaleString("pt-BR");
-}
+import { useTrafficData } from "../features/traffic/useTrafficData";
+import {
+  computeMetaFilteredStats,
+  computeMetaStats,
+  computePinterestStats,
+  filterSortMeta,
+  fmtDate,
+  toMillis,
+  topByClicks,
+  topBySpend,
+} from "../features/traffic/trafficUtils";
 
 // ═══════════════════════════════════════════════════════════════════
 // THRESHOLDS — editáveis pelo usuário no painel de configuração
@@ -922,106 +918,38 @@ function MetaDemographicsPanel() {
 // MAIN PAGE
 // ═══════════════════════════════════════════════════════════════════
 export default function TrafficPage() {
-  const [meta,       setMeta]       = useState([]);
-  const [pins,       setPins]       = useState([]);
-  const [loading,    setLoading]    = useState(true);
+  const { meta, pins, loading, metaError, pinsError, metaSync, reload } = useTrafficData();
   const [thresholds, setThresholds] = useState(DEFAULT_THRESHOLDS);
-  const [metaError,  setMetaError]  = useState(null);
-  const [pinsError,  setPinsError]  = useState(null);
-  const [metaSync,   setMetaSync]   = useState(null);
-  const [reloadNonce, setReloadNonce] = useState(0);
   const [metaQuery, setMetaQuery] = useState("");
   const [metaStatusFilter, setMetaStatusFilter] = useState("all");
   const [metaSort, setMetaSort] = useState("gasto_desc");
 
-  useEffect(() => {
-    let alive = true;
-    setLoading(true);
-    setMetaError(null);
-    setPinsError(null);
-
-    Promise.allSettled([getMetaAds(), getPinterest(), getImportacoes()])
-      .then((results) => {
-        if (!alive) return;
-
-        const [metaRes, pinRes, impRes] = results;
-
-        if (metaRes.status === "fulfilled") setMeta(metaRes.value || []);
-        else { setMeta([]); setMetaError(metaRes.reason); }
-
-        if (pinRes.status === "fulfilled") setPins(pinRes.value || []);
-        else { setPins([]); setPinsError(pinRes.reason); }
-
-        const importacoes = impRes.status === "fulfilled" ? (impRes.value || []) : [];
-        const latest = [...importacoes]
-          .filter((i) => i?.tipo === "meta_ads" && i?.fonte === "api_backend")
-          .sort((a, b) => (b?.importadoEm?.seconds || 0) - (a?.importadoEm?.seconds || 0))[0] || null;
-        setMetaSync(latest);
-      })
-      .finally(() => { if (alive) setLoading(false); });
-
-    return () => { alive = false; };
-  }, [reloadNonce]);
-
   if (loading) return <LoadingSpinner label="Carregando..." className="py-8" />;
 
-  const metaTotal    = meta.reduce((s, m) => s + (m.valorUsado  || 0), 0);
-  const metaCliques  = meta.reduce((s, m) => s + (m.resultados  || 0), 0);
-  const metaImp      = meta.reduce((s, m) => s + (m.impressoes  || 0), 0);
-  const pinTotal     = pins.reduce((s, p) => s + (p.spend       || 0), 0);
-  const pinCliques   = pins.reduce((s, p) => s + (p.pinClicks   || 0), 0);
-  const cpcMeta      = metaCliques > 0 ? metaTotal / metaCliques : 0;
-  const cpcPin       = pinCliques  > 0 ? pinTotal  / pinCliques  : 0;
-  const ctrGlobal    = metaImp     > 0 ? (metaCliques / metaImp) * 100 : 0;
-  const cpmMeta      = metaImp     > 0 ? (metaTotal / metaImp) * 1000 : 0;
+  const metaStats = computeMetaStats(meta);
+  const pinsStats = computePinterestStats(pins);
 
-  const metaLatestMs = meta.reduce((max, m) => Math.max(max, toMillis(m.importadoEm) || toMillis(m.updatedAt)), 0);
-  const pinsLatestMs = pins.reduce((max, p) => Math.max(max, toMillis(p.importadoEm) || toMillis(p.updatedAt)), 0);
-  const metaActive = meta.filter((m) => String(m.status || "").toLowerCase().includes("ativo")).length;
-  const metaPaused = meta.length - metaActive;
-  const q = metaQuery.trim().toLowerCase();
-  const metaFiltered = [...meta]
-    .filter((m) => {
-      if (!q) return true;
-      const hay = `${m.nomeAnuncio || ""} ${m.campanha || ""} ${m.conjuntoAnuncios || ""} ${m.subid || ""}`.toLowerCase();
-      return hay.includes(q);
-    })
-    .filter((m) => {
-      if (metaStatusFilter === "all") return true;
-      const st = String(m.status || "").toLowerCase();
-      if (metaStatusFilter === "active") return st.includes("ativo");
-      if (metaStatusFilter === "paused") return !st.includes("ativo");
-      return true;
-    })
-    .sort((a, b) => {
-      if (metaSort === "gasto_desc") return (b.valorUsado || 0) - (a.valorUsado || 0);
-      if (metaSort === "cliques_desc") return (b.resultados || 0) - (a.resultados || 0);
-      if (metaSort === "ctr_desc") {
-        const ca = (a.impressoes || 0) > 0 ? (a.resultados || 0) / (a.impressoes || 1) : 0;
-        const cb = (b.impressoes || 0) > 0 ? (b.resultados || 0) / (b.impressoes || 1) : 0;
-        return cb - ca;
-      }
-      if (metaSort === "cpc_asc") {
-        const ca = (a.resultados || 0) > 0 ? (a.valorUsado || 0) / (a.resultados || 1) : Number.POSITIVE_INFINITY;
-        const cb = (b.resultados || 0) > 0 ? (b.valorUsado || 0) / (b.resultados || 1) : Number.POSITIVE_INFINITY;
-        return ca - cb;
-      }
-      return 0;
-    });
+  const metaTotal    = metaStats.totalGasto;
+  const metaCliques  = metaStats.totalCliques;
+  const metaImp      = metaStats.totalImpressoes;
+  const cpcMeta      = metaStats.cpc;
+  const ctrGlobal    = metaStats.ctr;
+  const cpmMeta      = metaStats.cpm;
 
-  const metaFilteredTotal = metaFiltered.reduce((s, m) => s + (m.valorUsado || 0), 0);
-  const metaFilteredCliques = metaFiltered.reduce((s, m) => s + (m.resultados || 0), 0);
-  const metaFilteredImp = metaFiltered.reduce((s, m) => s + (m.impressoes || 0), 0);
-  const metaFilteredCtr = metaFilteredImp > 0 ? (metaFilteredCliques / metaFilteredImp) * 100 : 0;
-  const metaFilteredCpc = metaFilteredCliques > 0 ? metaFilteredTotal / metaFilteredCliques : 0;
-  const metaFilteredCpm = metaFilteredImp > 0 ? (metaFilteredTotal / metaFilteredImp) * 1000 : 0;
+  const pinTotal     = pinsStats.totalGasto;
+  const pinCliques   = pinsStats.totalCliques;
+  const cpcPin       = pinsStats.cpc;
 
-  const topMetaBySpend = [...meta]
-    .sort((a, b) => (b.valorUsado || 0) - (a.valorUsado || 0))
-    .slice(0, 10);
-  const topMetaByClicks = [...meta]
-    .sort((a, b) => (b.resultados || 0) - (a.resultados || 0))
-    .slice(0, 10);
+  const metaLatestMs = metaStats.latestMs;
+  const pinsLatestMs = pinsStats.latestMs;
+  const metaActive   = metaStats.active;
+  const metaPaused   = metaStats.paused;
+
+  const metaFiltered = filterSortMeta(meta, { query: metaQuery, statusFilter: metaStatusFilter, sort: metaSort });
+  const metaFilteredStats = computeMetaFilteredStats(metaFiltered);
+
+  const topMetaBySpend = topBySpend(meta, 10);
+  const topMetaByClicks = topByClicks(meta, 10);
 
   return (
     <>
@@ -1060,7 +988,7 @@ export default function TrafficPage() {
 
             <button
               type="button"
-              onClick={() => setReloadNonce((n) => n + 1)}
+              onClick={reload}
               className="inline-flex items-center gap-2 rounded-md border border-gray-200 px-3 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50"
             >
               <RefreshCw size={14} /> Atualizar
@@ -1275,12 +1203,12 @@ export default function TrafficPage() {
               <tfoot>
                 <tr className="bg-gray-50 font-semibold text-xs border-t border-gray-200">
                   <td className="px-3 py-2" colSpan={2}>TOTAL</td>
-                  <td className="px-2 py-2 text-center">{fmt(metaFilteredTotal)}</td>
-                  <td className="px-2 py-2 text-center">{fmtNum(metaFilteredImp)}</td>
-                  <td className="px-2 py-2 text-center">{fmtNum(metaFilteredCliques)}</td>
-                  <td className="px-2 py-2 text-center">{metaFilteredImp > 0 ? metaFilteredCtr.toFixed(2) + "%" : "—"}</td>
-                  <td className="px-2 py-2 text-center">{fmt(metaFilteredCpc)}</td>
-                  <td className="px-2 py-2 text-center">{fmt(metaFilteredCpm)}</td>
+                  <td className="px-2 py-2 text-center">{fmt(metaFilteredStats.totalGasto)}</td>
+                  <td className="px-2 py-2 text-center">{fmtNum(metaFilteredStats.totalImpressoes)}</td>
+                  <td className="px-2 py-2 text-center">{fmtNum(metaFilteredStats.totalCliques)}</td>
+                  <td className="px-2 py-2 text-center">{metaFilteredStats.totalImpressoes > 0 ? metaFilteredStats.ctr.toFixed(2) + "%" : "—"}</td>
+                  <td className="px-2 py-2 text-center">{fmt(metaFilteredStats.cpc)}</td>
+                  <td className="px-2 py-2 text-center">{fmt(metaFilteredStats.cpm)}</td>
                   <td colSpan={2} />
                 </tr>
               </tfoot>
