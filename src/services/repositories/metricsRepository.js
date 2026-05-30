@@ -1,6 +1,7 @@
 import {
   collection,
   doc,
+  documentId,
   getDoc,
   getDocs,
   limit,
@@ -106,9 +107,8 @@ export async function getDashboardKPIsByPeriod(startDate, endDate) {
   } else {
     const q = query(
       dailyRef,
-      where("data", ">=", startDate),
-      where("data", "<=", endDate),
-      orderBy("data", "asc"),
+      where(documentId(), ">=", startDate),
+      where(documentId(), "<=", endDate),
     );
     snap = await getDocs(q);
   }
