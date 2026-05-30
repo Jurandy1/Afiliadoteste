@@ -92,14 +92,26 @@ export async function buscarProdutos(termo) {
 export async function getDashboardKPIsByPeriod(startDate, endDate) {
   console.log("🔵 [KPIsByPeriod] CHAMADO com:", { startDate, endDate });
   const dailyRef = collection(db, "shopee_daily");
-  const q = query(
-    dailyRef,
-    where("data", ">=", startDate),
-    where("data", "<=", endDate),
-    orderBy("data", "asc"),
-  );
+  let snap;
 
-  const snap = await getDocs(q);
+  if (startDate === endDate) {
+    const ref = doc(db, "shopee_daily", startDate);
+    const snapDoc = await getDoc(ref);
+    snap = {
+      size: snapDoc.exists() ? 1 : 0,
+      forEach: (cb) => {
+        if (snapDoc.exists()) cb(snapDoc);
+      },
+    };
+  } else {
+    const q = query(
+      dailyRef,
+      where("data", ">=", startDate),
+      where("data", "<=", endDate),
+      orderBy("data", "asc"),
+    );
+    snap = await getDocs(q);
+  }
 
   const tot = {
     comissao_total: 0,
