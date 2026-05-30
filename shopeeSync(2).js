@@ -108,7 +108,15 @@ function shopeeClassifyStatus(rawStatus) {
   return "pendente";
 }
 
-function shopeeNormalizeSubId(s) {
+function shopeeNormalizeSubId(raw) {
+  // utmContent pode vir como string "story" ou como array ["story","",""]
+  // ou ainda como CSV "story,,,,". Sempre pegamos o primeiro valor não-vazio.
+  let s = raw;
+  if (Array.isArray(s)) {
+    s = s.find((v) => v && String(v).trim()) || "";
+  } else if (typeof s === "string" && s.includes(",")) {
+    s = s.split(",").find((v) => v && v.trim()) || "";
+  }
   return String(s || "").replace(/-/g, "").trim().toLowerCase();
 }
 
