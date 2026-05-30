@@ -58,46 +58,65 @@ function readSubIdColumnPrefs() {
 }
 
 function calcularRangePeriodo(periodo, rangeCustom) {
+  console.log("🟢 [calcularRange] periodo:", periodo, "rangeCustom:", rangeCustom);
   const hoje = new Date();
   const hojeStr = hoje.toISOString().slice(0, 10);
 
   if (periodo === "hoje") {
-    return { startDate: hojeStr, endDate: hojeStr };
+    const result = { startDate: hojeStr, endDate: hojeStr };
+    console.log("🟢 [calcularRange] retornando:", result);
+    return result;
   }
   if (periodo === "custom") {
-    if (!rangeCustom?.start || !rangeCustom?.end) return null;
-    return { startDate: rangeCustom.start, endDate: rangeCustom.end };
+    if (!rangeCustom?.start || !rangeCustom?.end) {
+      console.log("🟢 [calcularRange] retornando:", { startDate: null, endDate: null });
+      return null;
+    }
+    const result = { startDate: rangeCustom.start, endDate: rangeCustom.end };
+    console.log("🟢 [calcularRange] retornando:", result);
+    return result;
   }
   if (periodo === "7d") {
     const d = new Date(hoje);
     d.setDate(d.getDate() - 7);
-    return { startDate: d.toISOString().slice(0, 10), endDate: hojeStr };
+    const result = { startDate: d.toISOString().slice(0, 10), endDate: hojeStr };
+    console.log("🟢 [calcularRange] retornando:", result);
+    return result;
   }
   if (periodo === "14d") {
     const d = new Date(hoje);
     d.setDate(d.getDate() - 14);
-    return { startDate: d.toISOString().slice(0, 10), endDate: hojeStr };
+    const result = { startDate: d.toISOString().slice(0, 10), endDate: hojeStr };
+    console.log("🟢 [calcularRange] retornando:", result);
+    return result;
   }
   if (periodo === "30d") {
     const d = new Date(hoje);
     d.setDate(d.getDate() - 30);
-    return { startDate: d.toISOString().slice(0, 10), endDate: hojeStr };
+    const result = { startDate: d.toISOString().slice(0, 10), endDate: hojeStr };
+    console.log("🟢 [calcularRange] retornando:", result);
+    return result;
   }
   if (periodo === "mes_atual") {
     const inicio = new Date(hoje.getFullYear(), hoje.getMonth(), 1);
-    return {
+    const result = {
       startDate: inicio.toISOString().slice(0, 10),
       endDate: hojeStr,
     };
+    console.log("🟢 [calcularRange] retornando:", result);
+    return result;
   }
   if (periodo === "mes_anterior") {
     const inicio = new Date(hoje.getFullYear(), hoje.getMonth() - 1, 1);
     const fim = new Date(hoje.getFullYear(), hoje.getMonth(), 0);
-    return {
+    const result = {
       startDate: inicio.toISOString().slice(0, 10),
       endDate: fim.toISOString().slice(0, 10),
     };
+    console.log("🟢 [calcularRange] retornando:", result);
+    return result;
   }
+  console.log("🟢 [calcularRange] retornando:", { startDate: null, endDate: null });
   return null;
 }
 

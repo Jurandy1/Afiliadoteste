@@ -90,6 +90,7 @@ export async function buscarProdutos(termo) {
 }
 
 export async function getDashboardKPIsByPeriod(startDate, endDate) {
+  console.log("🔵 [KPIsByPeriod] CHAMADO com:", { startDate, endDate });
   const dailyRef = collection(db, "shopee_daily");
   const q = query(
     dailyRef,
@@ -124,6 +125,11 @@ export async function getDashboardKPIsByPeriod(startDate, endDate) {
   const gastoTotal = 0;
   const lucro = tot.comissao_total - gastoTotal;
 
+  console.log("🔵 [KPIsByPeriod] RESULTADO:", {
+    diasComDados: snap.size,
+    comissao: tot.comissao_total,
+    vendas: tot.vendas,
+  });
   return {
     comissao: tot.comissao_total,
     comissaoConcluida: tot.comissao_concluida,
