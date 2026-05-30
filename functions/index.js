@@ -677,10 +677,20 @@ function agruparPorData(nodes) {
   return dayMap;
 }
 
-async function gravarShopeeDaily(dayMap, batch, flush, state) {
+async function gravarShopeeDaily(dayMap, batch, flush, state, todayOnly = false) {
   let gravados = 0;
+  
+  // Se todayOnly=true, só grava o doc do dia atual (UTC).
+  // Isso previne que backfills com janela curta destruam dias anteriores
+  // com dados parciais.
+  const hojeUTC = new Date().toISOString().slice(0, 10);
 
   for (const [date, totais] of Object.entries(dayMap)) {
+    // Pula dias passados quando estamos em modo "todayOnly"
+    if (todayOnly && date !== hojeUTC) {
+      console.log(`[gravarShopeeDaily] todayOnly: pulando ${date} (não é hoje ${hojeUTC})`);
+      continue;
+    }
     const ref = db.collection("shopee_daily").doc(date);
     batch.set(ref, {
       ...totais,
@@ -847,9 +857,10 @@ async function runShopeeSync({ startTs, endTs, label, updateCursor = false }) {
 
   let dailyGravados = 0;
   if (ativaDaily) {
+    const isTodayOnly = label === "backfill_today_only";
     const dayMap = agruparPorData(allNodes);
     const state = { count };
-    dailyGravados = await gravarShopeeDaily(dayMap, batch, flush, state);
+    dailyGravados = await gravarShopeeDaily(dayMap, batch, flush, state, isTodayOnly);
     count = state.count;
   }
 
@@ -957,15 +968,15 @@ exports.shopeeBackfillNow = onRequest(
     }
     try {
       const days = Math.max(1, Math.min(365, parseInt(req.query.days || "90", 10) || 90));
+      const todayOnly = req.query.todayOnly === "1";
       const now = Math.floor(Date.now() / 1000);
       const start = now - days * 86400;
       const result = await runShopeeSync({
         startTs: start,
         endTs: now,
-        label: `backfill_${days}d`,
+        label: todayOnly ? "backfill_today_only" : `backfill_${days}d`,
         updateCursor: true, // backfill define o cursor inicial
       });
-      await recalcularSumario(db);
       res.json(result);
     } catch (e) {
       res.status(500).json({ error: String(e?.message || e) });
