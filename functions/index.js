@@ -492,6 +492,13 @@ async function shopeePullRange(startTs, endTs) {
 }
 
 function shopeeAggregate(nodes) {
+  if (nodes && nodes.length > 0) {
+    console.log("[DEBUG purchaseTime] amostra:", JSON.stringify({
+      primeiro: nodes[0].purchaseTime,
+      tipo: typeof nodes[0].purchaseTime,
+      total_nodes: nodes.length,
+    }));
+  }
   const prodMap = {};
   const subIdMap = {};
 
@@ -605,6 +612,150 @@ function shopeeAggregate(nodes) {
   return { prodMap, subIdMap };
 }
 
+function agruparPorData(nodes) {
+  const dayMap = {};
+
+  for (const node of nodes) {
+    if (!node.purchaseTime || typeof node.purchaseTime !== "number") {
+      continue;
+    }
+    const date = new Date(node.purchaseTime * 1000)
+      .toISOString()
+      .slice(0, 10);
+
+    const orders = node.orders || [];
+
+    for (const ord of orders) {
+      const items = ord.items || [];
+      const status = shopeeClassifyStatus(
+        ord.orderStatus || node.conversionStatus,
+      );
+      const isCancel = status === "cancelada";
+      if (isCancel) continue;
+
+      for (const it of items) {
+        const qty = parseInt(it.qty, 10) || 1;
+        const price = parseFloat(it.itemPrice || "0") || 0;
+        const actual = parseFloat(it.actualAmount || "0") || 0;
+        const refund = parseFloat(it.refundAmount || "0") || 0;
+        const gmv = (actual > 0 ? actual : price * qty) - refund;
+        const commission =
+          parseFloat(it.itemCommission || it.itemTotalCommission || "0") || 0;
+
+        const isDireta = shopeeIsDireta(it.attributionType);
+        const isIndireta = isDireta ? 0 : 1;
+
+        if (!dayMap[date]) {
+          dayMap[date] = {
+            data: date,
+            vendas: 0,
+            vendas_diretas: 0,
+            vendas_indiretas: 0,
+            gmv_total: 0,
+            comissao_total: 0,
+            comissao_concluida: 0,
+            comissao_pendente: 0,
+          };
+        }
+
+        const d = dayMap[date];
+        d.vendas += qty;
+        d.vendas_diretas += isDireta;
+        d.vendas_indiretas += isIndireta;
+        d.gmv_total += gmv;
+        d.comissao_total += commission;
+
+        if (status === "concluida") {
+          d.comissao_concluida += commission;
+        } else {
+          d.comissao_pendente += commission;
+        }
+      }
+    }
+  }
+
+  return dayMap;
+}
+
+async function gravarShopeeDaily(dayMap, batch, flush, state) {
+  let gravados = 0;
+
+  for (const [date, totais] of Object.entries(dayMap)) {
+    const ref = db.collection("shopee_daily").doc(date);
+    batch.set(ref, {
+      ...totais,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    state.count++;
+    gravados++;
+    await flush();
+  }
+
+  return gravados;
+}
+
+async function recalcularSumario(db) {
+  const inicio = Date.now();
+
+  const prodSnap = await db.collection("produtos").get();
+  let comissaoTotal = 0;
+  let comissaoConcluida = 0;
+  let comissaoPendente = 0;
+  let fatBruto = 0;
+  let vendasTotal = 0;
+  let vendasDiretas = 0;
+  let vendasIndiretas = 0;
+
+  prodSnap.forEach((doc) => {
+    const p = doc.data() || {};
+    comissaoTotal += Number(p.comissao_total || 0);
+    comissaoConcluida += Number(p.comissao_concluida || 0);
+    comissaoPendente += Number(p.comissao_pendente || 0);
+    fatBruto += Number(p.gmv_total || 0);
+    vendasTotal += Number(p.vendas || 0);
+    vendasDiretas += Number(p.vendas_diretas || 0);
+    vendasIndiretas += Number(p.vendas_indiretas || 0);
+  });
+
+  const metaSnap = await db.collection("meta_ads").get();
+  let gastoMeta = 0;
+  metaSnap.forEach((doc) => {
+    const row = doc.data() || {};
+    gastoMeta += Number(row.valorUsado || 0);
+  });
+
+  let gastoPin = 0;
+  try {
+    const pinSnap = await db.collection("pinterest_ads").get();
+    pinSnap.forEach((doc) => {
+      const row = doc.data() || {};
+      gastoPin += Number(row.spend || 0);
+    });
+  } catch (err) {
+    console.warn("[recalcularSumario] Pinterest indisponível, ignorando:", err?.message || err);
+  }
+
+  const sumario = {
+    comissao_total: Math.round(comissaoTotal * 1000) / 1000,
+    comissao_concluida: Math.round(comissaoConcluida * 1000) / 1000,
+    comissao_pendente: Math.round(comissaoPendente * 1000) / 1000,
+    fat_bruto: Math.round(fatBruto * 100) / 100,
+    vendas_total: vendasTotal,
+    vendas_diretas: vendasDiretas,
+    vendas_indiretas: vendasIndiretas,
+    gasto_meta: Math.round(gastoMeta * 100) / 100,
+    gasto_pin: Math.round(gastoPin * 100) / 100,
+    gasto_total: Math.round((gastoMeta + gastoPin) * 100) / 100,
+    produtos_count: prodSnap.size,
+    last_updated: FieldValue.serverTimestamp(),
+  };
+
+  await db.collection("sumarios").doc("dashboard").set(sumario);
+  console.log(`[recalcularSumario] OK em ${Date.now() - inicio}ms`);
+
+  return sumario;
+}
+
 async function runShopeeSync({ startTs, endTs, label, updateCursor = false }) {
   const startedAt = Date.now();
   const importRef = db.collection("importacoes").doc();
@@ -658,22 +809,24 @@ async function runShopeeSync({ startTs, endTs, label, updateCursor = false }) {
     await flush();
   }
 
-  batch.set(importRef, {
-    tipo: "shopee_venda",
-    fonte: "api_backend",
-    modo: "append",
-    periodo: label,
-    rangeStart: startTs,
-    rangeEnd: endTs,
-    status: "sucesso",
-    linhasProcessadas: allNodes.length,
-    produtosUnicos: Object.keys(prodMap).length,
-    subIdsUnicos: Object.keys(subIdMap).length,
-    duracaoMs: Date.now() - startedAt,
-    paginas: pageCount,
-    importadoEm: FieldValue.serverTimestamp(),
-  });
-  count++;
+  if (!(allNodes.length === 0 && label === "incremental_cursor")) {
+    batch.set(importRef, {
+      tipo: "shopee_venda",
+      fonte: "api_backend",
+      modo: "append",
+      periodo: label,
+      rangeStart: startTs,
+      rangeEnd: endTs,
+      status: "sucesso",
+      linhasProcessadas: allNodes.length,
+      produtosUnicos: Object.keys(prodMap).length,
+      subIdsUnicos: Object.keys(subIdMap).length,
+      duracaoMs: Date.now() - startedAt,
+      paginas: pageCount,
+      importadoEm: FieldValue.serverTimestamp(),
+    });
+    count++;
+  }
 
   // Atualiza o cursor SÓ se a sync rodou até o fim sem exceção.
   // Usamos endTs - SHOPEE_CURSOR_BACKFILL_MIN*60 pra não perder eventos
@@ -687,6 +840,17 @@ async function runShopeeSync({ startTs, endTs, label, updateCursor = false }) {
       lastNodes: allNodes.length,
     }, { merge: true });
     count++;
+  }
+
+  const ativaDaily =
+    label === "reconcile_30d" || label.startsWith("backfill_");
+
+  let dailyGravados = 0;
+  if (ativaDaily) {
+    const dayMap = agruparPorData(allNodes);
+    const state = { count };
+    dailyGravados = await gravarShopeeDaily(dayMap, batch, flush, state);
+    count = state.count;
   }
 
   await flush(true);
@@ -707,7 +871,7 @@ async function runShopeeSync({ startTs, endTs, label, updateCursor = false }) {
 // ═══════════════════════════════════════════════════════════════════════════
 exports.shopeeIncrementalSync = onSchedule(
   {
-    schedule: "every 15 minutes",
+    schedule: "every 60 minutes",
     timeZone: "America/Sao_Paulo",
     secrets: ["SHOPEE_APP_ID", "SHOPEE_SECRET"],
     timeoutSeconds: 300,
@@ -748,7 +912,7 @@ exports.shopeeDailyReconcile = onSchedule(
   },
   async () => {
     const now = Math.floor(Date.now() / 1000);
-    const start = now - 30 * 86400;
+    const start = now - 7 * 86400;
     try {
       await runShopeeSync({
         startTs: start,
@@ -756,6 +920,7 @@ exports.shopeeDailyReconcile = onSchedule(
         label: "reconcile_30d",
         updateCursor: false, // reconcile não mexe no cursor do incremental
       });
+      await recalcularSumario(db);
     } catch (e) {
       console.error("[shopee] reconcile falhou:", e?.message || e);
     }
@@ -790,7 +955,31 @@ exports.shopeeBackfillNow = onRequest(
         label: `backfill_${days}d`,
         updateCursor: true, // backfill define o cursor inicial
       });
+      await recalcularSumario(db);
       res.json(result);
+    } catch (e) {
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  },
+);
+
+exports.recalcularSumarioNow = onRequest(
+  {
+    secrets: ["META_SYNC_SECRET"],
+    timeoutSeconds: 120,
+    memory: "512MiB",
+  },
+  async (req, res) => {
+    const secret = (process.env.META_SYNC_SECRET || "").trim();
+    const provided = String(req.get("authorization") || "").trim();
+    if (!secret || provided !== `Bearer ${secret}`) {
+      res.status(401).json({ error: "unauthorized" });
+      return;
+    }
+
+    try {
+      const sumario = await recalcularSumario(db);
+      res.json({ ok: true, sumario });
     } catch (e) {
       res.status(500).json({ error: String(e?.message || e) });
     }

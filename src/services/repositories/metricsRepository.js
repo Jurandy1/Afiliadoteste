@@ -1,9 +1,149 @@
+import {
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  limit,
+  orderBy,
+  query,
+  startAfter,
+  where,
+} from "firebase/firestore";
+import { db } from "../firebase/client";
 import { calcMetrics, resolveProductInvestimento } from "../../domain/metrics/productMetrics";
 import { buildOperationalAlerts } from "../../domain/metrics/operationalAlerts";
 import { getProdutos, getCliques, getSubIdVendas } from "./productsRepository";
 import { getMetaAds, getPinterest } from "./campaignsRepository";
 import { getImportacoes } from "./importsRepository";
 import { normalizeSubId } from "../../utils/normalizeSubId";
+
+export async function getDashboardKPIs() {
+  const ref = doc(db, "sumarios", "dashboard");
+  const snap = await getDoc(ref);
+  if (!snap.exists()) return null;
+  const s = snap.data() || {};
+  const gastoTotal = Number(s.gasto_total ?? ((s.gasto_meta || 0) + (s.gasto_pin || 0)));
+  const comissao = Number(s.comissao_total || 0);
+  const lucro = comissao - gastoTotal;
+
+  return {
+    comissao,
+    comissaoConcluida: Number(s.comissao_concluida || 0),
+    comissaoPendente: Number(s.comissao_pendente || 0),
+    fatBruto: Number(s.fat_bruto || 0),
+    vendas: Number(s.vendas_total || 0),
+    vendasDiretas: Number(s.vendas_diretas || 0),
+    vendasIndiretas: Number(s.vendas_indiretas || 0),
+    gastoMeta: Number(s.gasto_meta || 0),
+    gastoPin: Number(s.gasto_pin || 0),
+    gastoTotal,
+    lucro,
+    roi: gastoTotal > 0 ? (lucro / gastoTotal) * 100 : 0,
+    roas: gastoTotal > 0 ? comissao / gastoTotal : 0,
+    ticketMedio: (Number(s.vendas_total || 0)) > 0 ? Number(s.fat_bruto || 0) / Number(s.vendas_total || 0) : 0,
+    lastUpdated: s.last_updated || null,
+    produtosCount: Number(s.produtos_count || 0),
+  };
+}
+
+function enrichProduto(p) {
+  const investimento = Number(p?.investimento || 0);
+  const base = { ...p, investimento };
+  const metrics = calcMetrics(base);
+  const fonte = String(p?.fonte || "").toLowerCase();
+  const plataforma = String(p?.plataforma || "").toLowerCase();
+  const origem = (fonte.includes("shopee") || plataforma.includes("shopee")) ? "Shopee" : (metrics.origem || "Manual");
+  return { ...base, ...metrics, origem };
+}
+
+export async function getProdutosPagina(pageSize = 50, lastDoc = null) {
+  const produtosRef = collection(db, "produtos");
+  const order = orderBy("comissao_total", "desc");
+  const q = lastDoc
+    ? query(produtosRef, order, startAfter(lastDoc), limit(pageSize))
+    : query(produtosRef, order, limit(pageSize));
+
+  const snap = await getDocs(q);
+  const produtos = snap.docs.map((d) => enrichProduto({ id: d.id, ...d.data() }));
+
+  return {
+    produtos,
+    lastDoc: snap.docs[snap.docs.length - 1] || null,
+    hasMore: snap.docs.length === pageSize,
+  };
+}
+
+export async function buscarProdutos(termo) {
+  const t = String(termo || "").trim();
+  if (!t || t.length < 2) return [];
+
+  const produtosRef = collection(db, "produtos");
+  const q = query(
+    produtosRef,
+    orderBy("nome"),
+    where("nome", ">=", t),
+    where("nome", "<=", t + "\uf8ff"),
+    limit(10),
+  );
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => enrichProduto({ id: d.id, ...d.data() }));
+}
+
+export async function getDashboardKPIsByPeriod(startDate, endDate) {
+  const dailyRef = collection(db, "shopee_daily");
+  const q = query(
+    dailyRef,
+    where("data", ">=", startDate),
+    where("data", "<=", endDate),
+    orderBy("data", "asc"),
+  );
+
+  const snap = await getDocs(q);
+
+  const tot = {
+    comissao_total: 0,
+    comissao_concluida: 0,
+    comissao_pendente: 0,
+    fat_bruto: 0,
+    vendas: 0,
+    vendas_diretas: 0,
+    vendas_indiretas: 0,
+  };
+
+  snap.forEach((d) => {
+    const x = d.data() || {};
+    tot.comissao_total += x.comissao_total || 0;
+    tot.comissao_concluida += x.comissao_concluida || 0;
+    tot.comissao_pendente += x.comissao_pendente || 0;
+    tot.fat_bruto += x.gmv_total || 0;
+    tot.vendas += x.vendas || 0;
+    tot.vendas_diretas += x.vendas_diretas || 0;
+    tot.vendas_indiretas += x.vendas_indiretas || 0;
+  });
+
+  const gastoTotal = 0;
+  const lucro = tot.comissao_total - gastoTotal;
+
+  return {
+    comissao: tot.comissao_total,
+    comissaoConcluida: tot.comissao_concluida,
+    comissaoPendente: tot.comissao_pendente,
+    fatBruto: tot.fat_bruto,
+    vendas: tot.vendas,
+    vendasDiretas: tot.vendas_diretas,
+    vendasIndiretas: tot.vendas_indiretas,
+    gastoMeta: 0,
+    gastoPin: 0,
+    gastoTotal: 0,
+    lucro,
+    roi: 0,
+    roas: 0,
+    ticketMedio: tot.vendas > 0 ? tot.fat_bruto / tot.vendas : 0,
+    lastUpdated: null,
+    diasComDados: snap.size,
+    _source: "shopee_daily",
+  };
+}
 
 export async function getDashboardData(settings = {}) {
   const { impostoMeta = 0, impostoNf = 0 } = settings || {};

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useMemo, useState } from "react";
 import { BarChart3, DollarSign, ShoppingBag, Target, TrendingUp, Ticket } from "lucide-react";
-import { getDashboardData } from "../services/repositories/metricsRepository";
+import { buscarProdutos, getDashboardData, getDashboardKPIs, getDashboardKPIsByPeriod, getProdutosPagina } from "../services/repositories/metricsRepository";
 import { filterProdutos, sortProdutos } from "../domain/attribution/productFilters";
 import { paginate, DEFAULT_PAGE_SIZE } from "../utils/pagination";
 import { fmt, fmtPct, fmtRoas, fmtNum } from "../utils/formatters";
@@ -57,6 +57,43 @@ function readSubIdColumnPrefs() {
   }
 }
 
+function calcularRangePeriodo(periodo) {
+  const hoje = new Date();
+  const hojeStr = hoje.toISOString().slice(0, 10);
+
+  if (periodo === "7d") {
+    const d = new Date(hoje);
+    d.setDate(d.getDate() - 7);
+    return { startDate: d.toISOString().slice(0, 10), endDate: hojeStr };
+  }
+  if (periodo === "14d") {
+    const d = new Date(hoje);
+    d.setDate(d.getDate() - 14);
+    return { startDate: d.toISOString().slice(0, 10), endDate: hojeStr };
+  }
+  if (periodo === "30d") {
+    const d = new Date(hoje);
+    d.setDate(d.getDate() - 30);
+    return { startDate: d.toISOString().slice(0, 10), endDate: hojeStr };
+  }
+  if (periodo === "mes_atual") {
+    const inicio = new Date(hoje.getFullYear(), hoje.getMonth(), 1);
+    return {
+      startDate: inicio.toISOString().slice(0, 10),
+      endDate: hojeStr,
+    };
+  }
+  if (periodo === "mes_anterior") {
+    const inicio = new Date(hoje.getFullYear(), hoje.getMonth() - 1, 1);
+    const fim = new Date(hoje.getFullYear(), hoje.getMonth(), 0);
+    return {
+      startDate: inicio.toISOString().slice(0, 10),
+      endDate: fim.toISOString().slice(0, 10),
+    };
+  }
+  return null;
+}
+
 export default function DashboardPage() {
   const [data,         setData]         = useState(null);
   const [loading,      setLoading]      = useState(true);
@@ -75,6 +112,12 @@ export default function DashboardPage() {
   const [subSearch,    setSubSearch]    = useState("");
   const [subColsOpen,  setSubColsOpen]  = useState(false);
   const [subCols,      setSubCols]      = useState(readSubIdColumnPrefs);
+  const [prodCursor,   setProdCursor]   = useState({ lastDoc: null, hasMore: false });
+  const [loadingMore,  setLoadingMore]  = useState(false);
+  const [prodSearch,   setProdSearch]   = useState("");
+  const [prodSearchResults, setProdSearchResults] = useState(null);
+  const [prodSearchLoading, setProdSearchLoading] = useState(false);
+  const [periodoFiltro, setPeriodoFiltro] = useState("all");
   const abortRef = useRef(false);
 
   useEffect(() => {
@@ -90,15 +133,77 @@ export default function DashboardPage() {
     try {
       const s = readDashboardSettings();
       setSettings(s);
-      const result = await getDashboardData(s);
+      const range = calcularRangePeriodo(periodoFiltro);
+      const [kpisFromSumario, produtosPage] = await Promise.all([
+        range
+          ? getDashboardKPIsByPeriod(range.startDate, range.endDate).catch(() => null)
+          : getDashboardKPIs().catch(() => null),
+        getProdutosPagina(50).catch(() => ({ produtos: [], lastDoc: null, hasMore: false })),
+      ]);
+
       if (abortRef.current) return;
-      setData(result);
+
+      if (!kpisFromSumario) {
+        const result = await getDashboardData(s);
+        if (abortRef.current) return;
+        setData(result);
+        setProdCursor({ lastDoc: null, hasMore: false });
+        setProdSearch("");
+        setProdSearchResults(null);
+        return;
+      }
+
+      const produtos = produtosPage?.produtos || [];
+      const ranking = [...produtos]
+        .sort((a, b) => (b.comissao_concluida || 0) - (a.comissao_concluida || 0))
+        .slice(0, 10);
+
+      setData({
+        kpis: {
+          produtosAtivos: kpisFromSumario.produtosCount || produtos.length,
+          totalComissao: kpisFromSumario.comissao,
+          comissaoConcluida: kpisFromSumario.comissaoConcluida,
+          comissaoPendente: kpisFromSumario.comissaoPendente,
+          comissaoCancelada: 0,
+          faturamentoBruto: kpisFromSumario.fatBruto,
+          totalVendas: kpisFromSumario.vendas,
+          vendasDiretas: kpisFromSumario.vendasDiretas,
+          vendasIndiretas: kpisFromSumario.vendasIndiretas,
+          qtdItens: 0,
+          totalCliquesShopee: 0,
+          totalCliques: 0,
+          totalInvestimento: kpisFromSumario.gastoTotal,
+          lucroEstimado: 0,
+          lucro: kpisFromSumario.lucro,
+          roas: kpisFromSumario.roas,
+          roiGeral: kpisFromSumario.gastoTotal > 0 ? (kpisFromSumario.lucro / kpisFromSumario.gastoTotal) : 0,
+          convRate: 0,
+          cpcReal: 0,
+          ticketMedio: kpisFromSumario.ticketMedio,
+          impostoTotal: 0,
+          metaTotalGasto: kpisFromSumario.gastoMeta,
+          metaTotalCliques: 0,
+          metaTotalImpressoes: 0,
+          pinTotalGasto: kpisFromSumario.gastoPin,
+          pinTotalCliques: 0,
+          roiMedio: 0,
+          lastUpdated: kpisFromSumario.lastUpdated,
+        },
+        statusCount: { Escalando: 0, Validando: 0, Pausado: 0 },
+        ranking,
+        produtos,
+        subIds: [],
+        subIdDiagnostics: null,
+        operationalAlerts: [],
+      });
+
+      setProdCursor({ lastDoc: produtosPage?.lastDoc || null, hasMore: !!produtosPage?.hasMore });
     } catch (e) {
-      if (abortRef.current) return;
-      setLoadError(e);
+      if (!abortRef.current) setLoadError(e);
+    } finally {
+      if (!abortRef.current) setLoading(false);
     }
-    setLoading(false);
-  }, []);
+  }, [periodoFiltro]);
 
   useEffect(() => {
     load();
@@ -106,17 +211,17 @@ export default function DashboardPage() {
   }, [load]);
 
   const filteredSorted = useMemo(() => {
-    if (!data?.produtos) return [];
-    const filtered = filterProdutos(data.produtos, { statusFilter, roiFilter, origemFilter });
+    const base = prodSearchResults ?? data?.produtos ?? [];
+    const filtered = filterProdutos(base, { statusFilter, roiFilter, origemFilter });
     return sortProdutos(filtered, sortField, sortDir);
-  }, [data, statusFilter, roiFilter, origemFilter, sortField, sortDir]);
+  }, [data, prodSearchResults, statusFilter, roiFilter, origemFilter, sortField, sortDir]);
 
   const paged = useMemo(
     () => paginate(filteredSorted, tablePage, DEFAULT_PAGE_SIZE),
     [filteredSorted, tablePage],
   );
 
-  useEffect(() => { setTablePage(1); }, [statusFilter, roiFilter, origemFilter, sortField, sortDir]);
+  useEffect(() => { setTablePage(1); }, [statusFilter, roiFilter, origemFilter, sortField, sortDir, prodSearchResults]);
 
   const handleSort = (field) => {
     if (sortField === field) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -128,6 +233,57 @@ export default function DashboardPage() {
   const subIdDiagnostics  = data?.subIdDiagnostics;
   const ranking           = data?.ranking || [];
   const operationalAlerts = data?.operationalAlerts || [];
+
+  useEffect(() => {
+    const t = String(prodSearch || "").trim();
+    if (t.length < 2) {
+      setProdSearchResults(null);
+      setProdSearchLoading(false);
+      return;
+    }
+
+    setProdSearchLoading(true);
+    const handle = window.setTimeout(async () => {
+      try {
+        const res = await buscarProdutos(t);
+        if (abortRef.current) return;
+        setProdSearchResults(res);
+      } catch {
+        if (abortRef.current) return;
+        setProdSearchResults([]);
+      } finally {
+        if (abortRef.current) return;
+        setProdSearchLoading(false);
+      }
+    }, 400);
+
+    return () => window.clearTimeout(handle);
+  }, [prodSearch]);
+
+  const handleLoadMore = useCallback(async () => {
+    if (loadingMore) return;
+    if (!prodCursor?.hasMore) return;
+    if (prodSearchResults) return;
+    if (!prodCursor?.lastDoc) return;
+
+    setLoadingMore(true);
+    try {
+      const next = await getProdutosPagina(50, prodCursor.lastDoc);
+      if (abortRef.current) return;
+      const novos = next?.produtos || [];
+      setData((prev) => {
+        const prevProdutos = prev?.produtos || [];
+        const merged = [...prevProdutos, ...novos];
+        const nextRanking = [...merged]
+          .sort((a, b) => (b.comissao_concluida || 0) - (a.comissao_concluida || 0))
+          .slice(0, 10);
+        return prev ? { ...prev, produtos: merged, ranking: nextRanking } : prev;
+      });
+      setProdCursor({ lastDoc: next?.lastDoc || null, hasMore: !!next?.hasMore });
+    } finally {
+      if (!abortRef.current) setLoadingMore(false);
+    }
+  }, [loadingMore, prodCursor, prodSearchResults]);
 
   const metaPct = useMemo(() => {
     const fat = kpis?.faturamentoBruto || 0;
@@ -249,6 +405,37 @@ export default function DashboardPage() {
 
   return (
     <>
+      <div className="flex flex-wrap gap-2 mb-4 items-center">
+        <span className="text-sm font-medium text-gray-600">Período:</span>
+        {[
+          { id: "all", label: "Todo período" },
+          { id: "7d", label: "7 dias" },
+          { id: "14d", label: "14 dias" },
+          { id: "30d", label: "30 dias" },
+          { id: "mes_atual", label: "Este mês" },
+          { id: "mes_anterior", label: "Mês anterior" },
+        ].map((opt) => (
+          <button
+            key={opt.id}
+            type="button"
+            onClick={() => setPeriodoFiltro(opt.id)}
+            className={
+              periodoFiltro === opt.id
+                ? "px-3 py-1 rounded text-sm bg-blue-600 text-white"
+                : "px-3 py-1 rounded text-sm bg-gray-100 text-gray-700 hover:bg-gray-200"
+            }
+          >
+            {opt.label}
+          </button>
+        ))}
+      </div>
+
+      {periodoFiltro !== "all" && (
+        <div className="mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded text-sm text-yellow-800">
+          ⚠️ No modo filtrado por período, o gasto de Meta Ads/Pinterest não está incluído. KPIs de Lucro, ROI e ROAS ficam zerados temporariamente. Os demais valores (Comissão, Vendas, Faturamento, Ticket Médio) refletem apenas o período selecionado.
+        </div>
+      )}
+
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3 mb-4">
         <KPICard
           icon={<DollarSign size={18} />}
@@ -615,7 +802,27 @@ export default function DashboardPage() {
         <div className="px-4 py-3 border-b border-gray-100">
           <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
             <h3 className="text-sm font-semibold">Produtos — painel de ação</h3>
-            <span className="text-xs text-gray-400">{paged.total} de {data.produtos.length} · {kpis.produtosAtivos} ativos</span>
+            <span className="text-xs text-gray-400">
+              {paged.total} de {(prodSearchResults ?? data.produtos).length} · {kpis.produtosAtivos} no total
+            </span>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 mb-2">
+            <input
+              className="border border-gray-200 rounded px-2 py-1 bg-white text-xs w-full sm:w-64"
+              placeholder="Buscar produto..."
+              value={prodSearch}
+              onChange={(e) => setProdSearch(e.target.value)}
+            />
+            {prodSearchLoading && <span className="text-xs text-gray-400">Buscando...</span>}
+            {!!prodSearch && (
+              <button
+                type="button"
+                className="border border-gray-200 rounded px-2 py-1 hover:bg-gray-50 text-xs"
+                onClick={() => { setProdSearch(""); setProdSearchResults(null); }}
+              >
+                Limpar busca
+              </button>
+            )}
           </div>
           <ProductFilters
             statusFilter={statusFilter}
@@ -670,6 +877,18 @@ export default function DashboardPage() {
             </tbody>
           </table>
         </div>
+        {!prodSearchResults && prodCursor?.hasMore && (
+          <div className="px-4 py-3 border-t border-gray-100 flex justify-center">
+            <button
+              type="button"
+              className="border border-gray-200 rounded px-3 py-1.5 hover:bg-gray-50 text-xs disabled:opacity-50"
+              disabled={loadingMore}
+              onClick={handleLoadMore}
+            >
+              {loadingMore ? "Carregando..." : "Carregar mais 50"}
+            </button>
+          </div>
+        )}
         <PaginationBar page={paged.page} totalPages={paged.totalPages} total={paged.total} onPageChange={setTablePage} />
       </div>
     </>
