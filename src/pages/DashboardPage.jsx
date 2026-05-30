@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useMemo, useState } from "react";
 import { BarChart3, DollarSign, ShoppingBag, Target, TrendingUp, Ticket } from "lucide-react";
-import { buscarProdutos, getDashboardData, getDashboardKPIs, getDashboardKPIsByPeriod, getProdutosPagina } from "../services/repositories/metricsRepository";
+import { buscarProdutos, dispararBackfillHoje, getDashboardData, getDashboardKPIs, getDashboardKPIsByPeriod, getProdutosPagina } from "../services/repositories/metricsRepository";
 import { filterProdutos, sortProdutos } from "../domain/attribution/productFilters";
 import { paginate, DEFAULT_PAGE_SIZE } from "../utils/pagination";
 import { fmt, fmtPct, fmtRoas, fmtNum } from "../utils/formatters";
@@ -57,10 +57,17 @@ function readSubIdColumnPrefs() {
   }
 }
 
-function calcularRangePeriodo(periodo) {
+function calcularRangePeriodo(periodo, rangeCustom) {
   const hoje = new Date();
   const hojeStr = hoje.toISOString().slice(0, 10);
 
+  if (periodo === "hoje") {
+    return { startDate: hojeStr, endDate: hojeStr };
+  }
+  if (periodo === "custom") {
+    if (!rangeCustom?.start || !rangeCustom?.end) return null;
+    return { startDate: rangeCustom.start, endDate: rangeCustom.end };
+  }
   if (periodo === "7d") {
     const d = new Date(hoje);
     d.setDate(d.getDate() - 7);
@@ -118,6 +125,8 @@ export default function DashboardPage() {
   const [prodSearchResults, setProdSearchResults] = useState(null);
   const [prodSearchLoading, setProdSearchLoading] = useState(false);
   const [periodoFiltro, setPeriodoFiltro] = useState("all");
+  const [rangeCustom, setRangeCustom] = useState({ start: "", end: "" });
+  const [atualizandoHoje, setAtualizandoHoje] = useState(false);
   const abortRef = useRef(false);
 
   useEffect(() => {
@@ -133,7 +142,13 @@ export default function DashboardPage() {
     try {
       const s = readDashboardSettings();
       setSettings(s);
-      const range = calcularRangePeriodo(periodoFiltro);
+      if (periodoFiltro === "hoje") {
+        setAtualizandoHoje(true);
+        await dispararBackfillHoje();
+        setAtualizandoHoje(false);
+      }
+
+      const range = calcularRangePeriodo(periodoFiltro, rangeCustom);
       const [kpisFromSumario, produtosPage] = await Promise.all([
         range
           ? getDashboardKPIsByPeriod(range.startDate, range.endDate).catch(() => null)
@@ -201,9 +216,12 @@ export default function DashboardPage() {
     } catch (e) {
       if (!abortRef.current) setLoadError(e);
     } finally {
-      if (!abortRef.current) setLoading(false);
+      if (!abortRef.current) {
+        setLoading(false);
+        setAtualizandoHoje(false);
+      }
     }
-  }, [periodoFiltro]);
+  }, [periodoFiltro, rangeCustom]);
 
   useEffect(() => {
     load();
@@ -405,36 +423,94 @@ export default function DashboardPage() {
 
   return (
     <>
-      <div className="flex flex-wrap gap-2 mb-4 items-center">
-        <span className="text-sm font-medium text-gray-600">Período:</span>
-        {[
-          { id: "all", label: "Todo período" },
-          { id: "7d", label: "7 dias" },
-          { id: "14d", label: "14 dias" },
-          { id: "30d", label: "30 dias" },
-          { id: "mes_atual", label: "Este mês" },
-          { id: "mes_anterior", label: "Mês anterior" },
-        ].map((opt) => (
-          <button
-            key={opt.id}
-            type="button"
-            onClick={() => setPeriodoFiltro(opt.id)}
-            className={
-              periodoFiltro === opt.id
-                ? "px-3 py-1 rounded text-sm bg-blue-600 text-white"
-                : "px-3 py-1 rounded text-sm bg-gray-100 text-gray-700 hover:bg-gray-200"
-            }
-          >
-            {opt.label}
-          </button>
-        ))}
-      </div>
-
-      {periodoFiltro !== "all" && (
-        <div className="mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded text-sm text-yellow-800">
-          ⚠️ No modo filtrado por período, o gasto de Meta Ads/Pinterest não está incluído. KPIs de Lucro, ROI e ROAS ficam zerados temporariamente. Os demais valores (Comissão, Vendas, Faturamento, Ticket Médio) refletem apenas o período selecionado.
+      {/* Filtro de período (botões fixos + Hoje + Calendário) */}
+      <div className="mb-4 space-y-3">
+        <div className="flex flex-wrap gap-2 items-center">
+          <span className="text-sm font-medium text-gray-600">Período:</span>
+          {[
+            { id: "all", label: "Todo período" },
+            { id: "hoje", label: "📅 Hoje" },
+            { id: "7d", label: "7 dias" },
+            { id: "14d", label: "14 dias" },
+            { id: "30d", label: "30 dias" },
+            { id: "mes_atual", label: "Este mês" },
+            { id: "mes_anterior", label: "Mês anterior" },
+          ].map((opt) => (
+            <button
+              key={opt.id}
+              onClick={() => {
+                setPeriodoFiltro(opt.id);
+                if (opt.id !== "custom") setRangeCustom({ start: "", end: "" });
+              }}
+              disabled={atualizandoHoje}
+              className={
+                periodoFiltro === opt.id
+                  ? "px-3 py-1 rounded text-sm bg-blue-600 text-white"
+                  : "px-3 py-1 rounded text-sm bg-gray-100 text-gray-700 hover:bg-gray-200"
+              }
+            >
+              {opt.label}
+            </button>
+          ))}
         </div>
-      )}
+
+        <div className="flex flex-wrap gap-2 items-center">
+          <span className="text-sm font-medium text-gray-600">Ou escolher datas:</span>
+          <input
+            type="date"
+            value={rangeCustom.start}
+            onChange={(e) =>
+              setRangeCustom((prev) => ({ ...prev, start: e.target.value }))
+            }
+            className="px-2 py-1 border border-gray-300 rounded text-sm"
+            max={new Date().toISOString().slice(0, 10)}
+          />
+          <span className="text-sm text-gray-500">até</span>
+          <input
+            type="date"
+            value={rangeCustom.end}
+            onChange={(e) =>
+              setRangeCustom((prev) => ({ ...prev, end: e.target.value }))
+            }
+            className="px-2 py-1 border border-gray-300 rounded text-sm"
+            max={new Date().toISOString().slice(0, 10)}
+          />
+          <button
+            onClick={() => {
+              if (rangeCustom.start && rangeCustom.end) {
+                setPeriodoFiltro("custom");
+              }
+            }}
+            disabled={!rangeCustom.start || !rangeCustom.end || atualizandoHoje}
+            className="px-3 py-1 rounded text-sm bg-green-600 text-white hover:bg-green-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
+          >
+            Aplicar
+          </button>
+          {periodoFiltro === "custom" && (
+            <button
+              onClick={() => {
+                setRangeCustom({ start: "", end: "" });
+                setPeriodoFiltro("all");
+              }}
+              className="px-3 py-1 rounded text-sm bg-gray-200 text-gray-700 hover:bg-gray-300"
+            >
+              Limpar
+            </button>
+          )}
+        </div>
+
+        {atualizandoHoje && (
+          <div className="p-3 bg-blue-50 border border-blue-200 rounded text-sm text-blue-800">
+            ⏳ Atualizando dados de hoje... (pode levar até 60 segundos)
+          </div>
+        )}
+
+        {periodoFiltro !== "all" && !atualizandoHoje && (
+          <div className="p-3 bg-yellow-50 border border-yellow-200 rounded text-sm text-yellow-800">
+            ⚠️ No modo filtrado, o gasto de Meta Ads/Pinterest não está incluído. KPIs de Lucro, ROI e ROAS ficam zerados temporariamente. Os demais valores (Comissão, Vendas, Faturamento, Ticket Médio) refletem apenas o período selecionado.
+          </div>
+        )}
+      </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3 mb-4">
         <KPICard

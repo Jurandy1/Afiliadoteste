@@ -145,6 +145,65 @@ export async function getDashboardKPIsByPeriod(startDate, endDate) {
   };
 }
 
+/**
+ * Dispara o shopeeBackfillNow no backend pra atualizar o doc daily de hoje
+ * antes de ler.
+ *
+ * Usado quando o cliente clica em "Hoje" — força atualização do dia atual,
+ * já que o reconcile só roda 1x/dia (4h BRT).
+ *
+ * Quando a função retorna (sucesso ou timeout), o doc /shopee_daily/{hoje}
+ * já está (ou estará em breve) atualizado.
+ *
+ * @returns {Promise<{ok: boolean, error?: string}>}
+ */
+export async function dispararBackfillHoje() {
+  const url = import.meta.env.VITE_BACKFILL_URL;
+  const secret = import.meta.env.VITE_BACKFILL_SECRET;
+
+  if (!url || !secret) {
+    console.warn("[dispararBackfillHoje] VITE_BACKFILL_URL ou VITE_BACKFILL_SECRET não configurados");
+    return { ok: false, error: "config_missing" };
+  }
+
+  try {
+    // Timeout de 90s — função pode demorar até 60s, damos 30s de margem
+    const ctrl = new AbortController();
+    const timeoutId = setTimeout(() => ctrl.abort(), 90000);
+
+    const resp = await fetch(`${url}?days=1`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        "Content-Length": "0",
+      },
+      body: "",
+      signal: ctrl.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!resp.ok) {
+      console.warn(`[dispararBackfillHoje] HTTP ${resp.status}`);
+      return { ok: false, error: `http_${resp.status}` };
+    }
+
+    const json = await resp.json();
+    console.log("[dispararBackfillHoje] OK:", json);
+    return { ok: true };
+  } catch (err) {
+    // Timeout do AbortController OU outro erro de rede
+    if (err.name === "AbortError") {
+      console.warn("[dispararBackfillHoje] Timeout de 90s — função pode estar rodando em background");
+      // Mesmo com timeout, a função geralmente termina em background
+      // então retornamos ok=true com flag de timeout
+      return { ok: true, timeout: true };
+    }
+    console.error("[dispararBackfillHoje] Erro:", err);
+    return { ok: false, error: err.message };
+  }
+}
+
 export async function getDashboardData(settings = {}) {
   const { impostoMeta = 0, impostoNf = 0 } = settings || {};
 
