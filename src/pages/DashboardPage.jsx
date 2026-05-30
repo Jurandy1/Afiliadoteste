@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useMemo, useState } from "react";
 import { BarChart3, DollarSign, ShoppingBag, Target, TrendingUp, Ticket } from "lucide-react";
-import { buscarProdutos, dispararBackfillHoje, getDashboardData, getDashboardKPIs, getDashboardKPIsByPeriod, getProdutosPagina } from "../services/repositories/metricsRepository";
+import { buscarProdutos, dispararBackfillHoje, getComparacaoMensal, getDashboardData, getDashboardKPIs, getDashboardKPIsByPeriod, getProdutosPagina, getResumoSemana, getUltimaAtualizacaoHoje } from "../services/repositories/metricsRepository";
 import { filterProdutos, sortProdutos } from "../domain/attribution/productFilters";
 import { paginate, DEFAULT_PAGE_SIZE } from "../utils/pagination";
 import { fmt, fmtPct, fmtRoas, fmtNum } from "../utils/formatters";
@@ -55,6 +55,46 @@ function readSubIdColumnPrefs() {
   } catch {
     return defaults;
   }
+}
+
+const THROTTLE_HOJE_KEY = "ultimo_clique_hoje_ts";
+const THROTTLE_HOJE_DURACAO_MS = 60_000;
+
+function getThrottleHojeRestante() {
+  try {
+    const ultimoTs = parseInt(localStorage.getItem(THROTTLE_HOJE_KEY) || "0", 10);
+    if (!ultimoTs) return 0;
+    const passado = Date.now() - ultimoTs;
+    const restante = THROTTLE_HOJE_DURACAO_MS - passado;
+    return restante > 0 ? restante : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function registrarCliqueHoje() {
+  try {
+    localStorage.setItem(THROTTLE_HOJE_KEY, String(Date.now()));
+  } catch {}
+}
+
+function formatarTempoAtras(date) {
+  if (!date) return "—";
+  const agora = Date.now();
+  const passado = agora - date.getTime();
+  const minutos = Math.floor(passado / 60000);
+
+  if (minutos < 1) return "agora mesmo";
+  if (minutos === 1) return "há 1 minuto";
+  if (minutos < 60) return `há ${minutos} minutos`;
+
+  const horas = Math.floor(minutos / 60);
+  if (horas === 1) return "há 1 hora";
+  if (horas < 24) return `há ${horas} horas`;
+
+  const dias = Math.floor(horas / 24);
+  if (dias === 1) return "há 1 dia";
+  return `há ${dias} dias`;
 }
 
 function calcularRangePeriodo(periodo, rangeCustom) {
@@ -146,6 +186,10 @@ export default function DashboardPage() {
   const [periodoFiltro, setPeriodoFiltro] = useState("all");
   const [rangeCustom, setRangeCustom] = useState({ start: "", end: "" });
   const [atualizandoHoje, setAtualizandoHoje] = useState(false);
+  const [throttleHojeMs, setThrottleHojeMs] = useState(0);
+  const [ultimaAtualizacao, setUltimaAtualizacao] = useState(null);
+  const [comparacaoMensal, setComparacaoMensal] = useState(null);
+  const [resumoSemana, setResumoSemana] = useState(null);
   const abortRef = useRef(false);
 
   useEffect(() => {
@@ -153,6 +197,13 @@ export default function DashboardPage() {
       window.localStorage.setItem("afilia:subid_cols", JSON.stringify(subCols));
     } catch {}
   }, [subCols]);
+
+  useEffect(() => {
+    const tick = () => setThrottleHojeMs(getThrottleHojeRestante());
+    tick();
+    const interval = setInterval(tick, 1000);
+    return () => clearInterval(interval);
+  }, []);
 
   const load = useCallback(async () => {
     abortRef.current = false;
@@ -165,6 +216,9 @@ export default function DashboardPage() {
         setAtualizandoHoje(true);
         await dispararBackfillHoje();
         setAtualizandoHoje(false);
+        getUltimaAtualizacaoHoje().then((ts) => {
+          if (!abortRef.current) setUltimaAtualizacao(ts);
+        });
       }
 
       const range = calcularRangePeriodo(periodoFiltro, rangeCustom);
@@ -244,6 +298,17 @@ export default function DashboardPage() {
 
   useEffect(() => {
     load();
+    getUltimaAtualizacaoHoje().then((ts) => {
+      if (!abortRef.current) setUltimaAtualizacao(ts);
+    });
+    Promise.all([
+      getComparacaoMensal().catch(() => null),
+      getResumoSemana().catch(() => null),
+    ]).then(([comp, sem]) => {
+      if (abortRef.current) return;
+      setComparacaoMensal(comp);
+      setResumoSemana(sem);
+    });
     return () => { abortRef.current = true; };
   }, [load]);
 
@@ -458,20 +523,37 @@ export default function DashboardPage() {
             <button
               key={opt.id}
               onClick={() => {
+                if (opt.id === "hoje" && throttleHojeMs > 0) {
+                  return;
+                }
+                if (opt.id === "hoje") {
+                  registrarCliqueHoje();
+                  setThrottleHojeMs(THROTTLE_HOJE_DURACAO_MS);
+                }
                 setPeriodoFiltro(opt.id);
                 if (opt.id !== "custom") setRangeCustom({ start: "", end: "" });
               }}
               disabled={atualizandoHoje}
               className={
-                periodoFiltro === opt.id
+                opt.id === "hoje" && throttleHojeMs > 0
+                  ? "px-3 py-1 rounded text-sm bg-gray-300 text-gray-500 cursor-not-allowed"
+                  : periodoFiltro === opt.id
                   ? "px-3 py-1 rounded text-sm bg-blue-600 text-white"
                   : "px-3 py-1 rounded text-sm bg-gray-100 text-gray-700 hover:bg-gray-200"
               }
             >
-              {opt.label}
+              {opt.id === "hoje" && throttleHojeMs > 0
+                ? `⏰ ${Math.ceil(throttleHojeMs / 1000)}s`
+                : opt.label}
             </button>
           ))}
         </div>
+
+        {ultimaAtualizacao && (
+          <div className="text-xs text-gray-500 mt-1">
+            📊 Dados de hoje atualizados {formatarTempoAtras(ultimaAtualizacao)}
+          </div>
+        )}
 
         <div className="flex flex-wrap gap-2 items-center">
           <span className="text-sm font-medium text-gray-600">Ou escolher datas:</span>
@@ -589,6 +671,39 @@ export default function DashboardPage() {
           trend="Fat. Bruto ÷ vendas"
           up
         />
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
+        {resumoSemana && (
+          <div className="p-4 bg-blue-50 border border-blue-200 rounded">
+            <div className="text-xs text-blue-700 font-medium mb-1">🗓️ Esta semana (últimos 7 dias)</div>
+            <div className="text-lg font-bold text-blue-900">
+              R$ {resumoSemana.comissao.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </div>
+            <div className="text-sm text-blue-700">
+              {resumoSemana.vendas.toLocaleString("pt-BR")} vendas · GMV R$ {resumoSemana.gmv.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </div>
+          </div>
+        )}
+
+        {comparacaoMensal && (
+          <div className="p-4 bg-purple-50 border border-purple-200 rounded">
+            <div className="text-xs text-purple-700 font-medium mb-1 capitalize">
+              📈 {comparacaoMensal.mesAtual.nome} vs {comparacaoMensal.mesAnterior.nome}
+            </div>
+            <div className="text-lg font-bold text-purple-900">
+              R$ {comparacaoMensal.mesAtual.comissao.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              {comparacaoMensal.variacaoComissao !== 0 && (
+                <span className={`ml-2 text-sm ${comparacaoMensal.variacaoComissao > 0 ? "text-green-600" : "text-red-600"}`}>
+                  {comparacaoMensal.variacaoComissao > 0 ? "▲" : "▼"} {Math.abs(comparacaoMensal.variacaoComissao).toFixed(1)}%
+                </span>
+              )}
+            </div>
+            <div className="text-sm text-purple-700">
+              {comparacaoMensal.mesAnterior.nome}: R$ {comparacaoMensal.mesAnterior.comissao.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="bg-white rounded-lg border border-gray-200 p-3.5 mb-4">
@@ -928,6 +1043,11 @@ export default function DashboardPage() {
             onOrigemChange={setOrigemFilter}
           />
         </div>
+        {periodoFiltro !== "all" && (
+          <div className="mb-3 p-3 bg-orange-50 border border-orange-200 rounded text-sm text-orange-800">
+            ℹ️ A tabela abaixo mostra os top 50 produtos pelo <strong>histórico completo</strong>. Os KPIs acima refletem apenas o período selecionado.
+          </div>
+        )}
         <div className="overflow-x-auto">
           <table className="w-full text-xs">
             <thead>

@@ -461,3 +461,151 @@ export async function getDashboardData(settings = {}) {
     operationalAlerts,
   };
 }
+
+export async function getDailyEvolution(days = 30) {
+  const hoje = new Date();
+  const inicio = new Date(hoje);
+  inicio.setDate(inicio.getDate() - (days - 1));
+
+  const startDate = inicio.toISOString().slice(0, 10);
+  const endDate = hoje.toISOString().slice(0, 10);
+
+  const dailyRef = collection(db, "shopee_daily");
+  const q = query(
+    dailyRef,
+    where(documentId(), ">=", startDate),
+    where(documentId(), "<=", endDate),
+  );
+
+  const snap = await getDocs(q);
+  const items = [];
+  snap.forEach((d) => {
+    const x = d.data() || {};
+    items.push({
+      data: x.data || d.id,
+      comissao: Number(x.comissao_total || 0),
+      vendas: Number(x.vendas || 0),
+      gmv: Number(x.gmv_total || 0),
+    });
+  });
+
+  items.sort((a, b) => a.data.localeCompare(b.data));
+
+  return items;
+}
+
+export async function getUltimaAtualizacaoHoje() {
+  const hojeUTC = new Date().toISOString().slice(0, 10);
+  try {
+    const ref = doc(db, "shopee_daily", hojeUTC);
+    const snap = await getDoc(ref);
+    if (!snap.exists()) return null;
+    const data = snap.data();
+    return data.updatedAt?.toDate?.() || null;
+  } catch (err) {
+    console.warn("[getUltimaAtualizacaoHoje] erro:", err);
+    return null;
+  }
+}
+
+export async function getComparacaoMensal() {
+  const hoje = new Date();
+  const anoAtual = hoje.getFullYear();
+  const mesAtual = hoje.getMonth();
+
+  const inicioMesAtual = new Date(anoAtual, mesAtual, 1).toISOString().slice(0, 10);
+  const hojeStr = hoje.toISOString().slice(0, 10);
+
+  const inicioMesAnterior = new Date(anoAtual, mesAtual - 1, 1).toISOString().slice(0, 10);
+  const fimMesAnterior = new Date(anoAtual, mesAtual, 0).toISOString().slice(0, 10);
+
+  const dailyRef = collection(db, "shopee_daily");
+
+  const q1 = query(
+    dailyRef,
+    where(documentId(), ">=", inicioMesAtual),
+    where(documentId(), "<=", hojeStr),
+  );
+  const snap1 = await getDocs(q1);
+  let comissaoAtual = 0;
+  let vendasAtual = 0;
+  snap1.forEach((d) => {
+    const x = d.data() || {};
+    comissaoAtual += Number(x.comissao_total || 0);
+    vendasAtual += Number(x.vendas || 0);
+  });
+
+  const q2 = query(
+    dailyRef,
+    where(documentId(), ">=", inicioMesAnterior),
+    where(documentId(), "<=", fimMesAnterior),
+  );
+  const snap2 = await getDocs(q2);
+  let comissaoAnterior = 0;
+  let vendasAnterior = 0;
+  snap2.forEach((d) => {
+    const x = d.data() || {};
+    comissaoAnterior += Number(x.comissao_total || 0);
+    vendasAnterior += Number(x.vendas || 0);
+  });
+
+  const variacaoComissao = comissaoAnterior > 0
+    ? ((comissaoAtual - comissaoAnterior) / comissaoAnterior) * 100
+    : 0;
+  const variacaoVendas = vendasAnterior > 0
+    ? ((vendasAtual - vendasAnterior) / vendasAnterior) * 100
+    : 0;
+
+  const nomeMesAtual = hoje.toLocaleString("pt-BR", { month: "long" });
+  const dataMesAnterior = new Date(anoAtual, mesAtual - 1, 1);
+  const nomeMesAnterior = dataMesAnterior.toLocaleString("pt-BR", { month: "long" });
+
+  return {
+    mesAtual: {
+      nome: nomeMesAtual,
+      comissao: comissaoAtual,
+      vendas: vendasAtual,
+    },
+    mesAnterior: {
+      nome: nomeMesAnterior,
+      comissao: comissaoAnterior,
+      vendas: vendasAnterior,
+    },
+    variacaoComissao,
+    variacaoVendas,
+  };
+}
+
+export async function getResumoSemana() {
+  const hoje = new Date();
+  const inicio = new Date(hoje);
+  inicio.setDate(inicio.getDate() - 6);
+
+  const startDate = inicio.toISOString().slice(0, 10);
+  const endDate = hoje.toISOString().slice(0, 10);
+
+  const dailyRef = collection(db, "shopee_daily");
+  const q = query(
+    dailyRef,
+    where(documentId(), ">=", startDate),
+    where(documentId(), "<=", endDate),
+  );
+
+  const snap = await getDocs(q);
+  let comissao = 0;
+  let vendas = 0;
+  let gmv = 0;
+  snap.forEach((d) => {
+    const x = d.data() || {};
+    comissao += Number(x.comissao_total || 0);
+    vendas += Number(x.vendas || 0);
+    gmv += Number(x.gmv_total || 0);
+  });
+
+  return {
+    comissao,
+    vendas,
+    gmv,
+    diasComDados: snap.size,
+  };
+}
