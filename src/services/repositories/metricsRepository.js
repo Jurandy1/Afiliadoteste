@@ -609,3 +609,104 @@ export async function getResumoSemana() {
     diasComDados: snap.size,
   };
 }
+
+export async function getSubIdPanelData(settings = {}) {
+  const { impostoMeta = 0, impostoNf = 0 } = settings || {};
+
+  const [metaAds, pinterest, subIdVendas] = await Promise.all([
+    getMetaAds(null).catch(() => []),
+    getPinterest(null).catch(() => []),
+    getSubIdVendas().catch(() => []),
+  ]);
+
+  const metaBySubId = {};
+  metaAds.forEach((m) => {
+    const sid = m.subid || normalizeSubId(m.nomeAnuncio || "");
+    if (!sid) return;
+    if (!metaBySubId[sid]) metaBySubId[sid] = { gasto: 0, cliques_anuncio: 0 };
+    metaBySubId[sid].gasto += m.valorUsado || 0;
+    metaBySubId[sid].cliques_anuncio += m.resultados || 0;
+  });
+
+  const pinBySubId = {};
+  pinterest.forEach((p) => {
+    const sid = p.subid || normalizeSubId(p.adName || "");
+    if (!sid) return;
+    if (!pinBySubId[sid]) pinBySubId[sid] = { gasto: 0, cliques_anuncio: 0 };
+    pinBySubId[sid].gasto += p.spend || 0;
+    pinBySubId[sid].cliques_anuncio += p.pinClicks || 0;
+  });
+
+  const vendasBySubId = {};
+  subIdVendas.forEach((v) => {
+    const key = v.id || (v.subid || "missing_subid");
+    vendasBySubId[key] = v;
+  });
+
+  const allSubIds = new Set([
+    ...Object.keys(vendasBySubId),
+    ...Object.keys(metaBySubId),
+    ...Object.keys(pinBySubId),
+  ]);
+
+  let subIds = [...allSubIds].map((id) => {
+    const v = vendasBySubId[id] || {};
+    const sid = v.subid ?? (id === "missing_subid" ? "" : id);
+    const gastoAds = (metaBySubId[sid]?.gasto || 0) + (pinBySubId[sid]?.gasto || 0);
+    const cliquesAds = (metaBySubId[sid]?.cliques_anuncio || 0) + (pinBySubId[sid]?.cliques_anuncio || 0);
+
+    const comissoes = v.comissoes || 0;
+    const faturamento = v.faturamento || 0;
+    const vendas_diretas = v.vendas_diretas || 0;
+    const vendas_indiretas = v.vendas_indiretas || 0;
+    const qtd_itens = v.qtd_itens || 0;
+    const total_vendas = vendas_diretas + vendas_indiretas;
+
+    const imposto_total = (gastoAds * (impostoMeta || 0) / 100) + (comissoes * (impostoNf || 0) / 100);
+    const lucro = comissoes - gastoAds - imposto_total;
+    const roi = gastoAds > 0 ? (lucro / gastoAds) : 0;
+    const ticket_medio = total_vendas > 0 ? (faturamento / total_vendas) : 0;
+
+    return {
+      id,
+      subid: sid,
+      comissoes,
+      faturamento,
+      gasto: gastoAds,
+      lucro,
+      roi,
+      total_vendas,
+      vendas_diretas,
+      vendas_indiretas,
+      qtd_itens,
+      ticket_medio,
+      cliques_anuncio: cliquesAds,
+      cliques_shopee: 0,
+      batimento: cliquesAds > 0 ? 0 : 0,
+      imposto_total,
+    };
+  });
+
+  subIds = subIds.filter((r) => !(
+    (r.gasto || 0) === 0 &&
+    (r.comissoes || 0) === 0 &&
+    (r.cliques_anuncio || 0) === 0 &&
+    (r.cliques_shopee || 0) === 0
+  ));
+
+  const hasSubIdSalesData = subIds.some(
+    (r) => (r.comissoes || 0) > 0 || (r.faturamento || 0) > 0 || (r.total_vendas || 0) > 0,
+  );
+
+  const subIdDiagnostics = {
+    totalRows: subIds.length,
+    subIdSalesDocs: subIdVendas.length,
+    effectiveSubIdSalesDocs: subIdVendas.length,
+    hasSubIdSalesData,
+    rowsWithSales: subIds.filter((r) => (r.comissoes || 0) > 0 || (r.total_vendas || 0) > 0).length,
+    isReliable: hasSubIdSalesData && subIdVendas.length > 0,
+    source: subIdVendas.length > 0 ? "collection" : "none",
+  };
+
+  return { subIds, subIdDiagnostics };
+}

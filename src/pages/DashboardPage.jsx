@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useMemo, useState } from "react";
 import { BarChart3, DollarSign, ShoppingBag, Target, TrendingUp, Ticket } from "lucide-react";
-import { buscarProdutos, dispararBackfillHoje, getComparacaoMensal, getDashboardData, getDashboardKPIs, getDashboardKPIsByPeriod, getProdutosPagina, getResumoSemana, getUltimaAtualizacaoHoje } from "../services/repositories/metricsRepository";
+import { buscarProdutos, dispararBackfillHoje, getComparacaoMensal, getDashboardData, getDashboardKPIs, getDashboardKPIsByPeriod, getProdutosPagina, getResumoSemana, getSubIdPanelData, getUltimaAtualizacaoHoje } from "../services/repositories/metricsRepository";
 import { filterProdutos, sortProdutos } from "../domain/attribution/productFilters";
 import { paginate, DEFAULT_PAGE_SIZE } from "../utils/pagination";
 import { fmt, fmtPct, fmtRoas, fmtNum } from "../utils/formatters";
@@ -191,6 +191,7 @@ export default function DashboardPage() {
   const [comparacaoMensal, setComparacaoMensal] = useState(null);
   const [resumoSemana, setResumoSemana] = useState(null);
   const abortRef = useRef(false);
+  const subIdLoadedRef = useRef(false);
 
   useEffect(() => {
     try {
@@ -212,6 +213,13 @@ export default function DashboardPage() {
     try {
       const s = readDashboardSettings();
       setSettings(s);
+      if (!subIdLoadedRef.current) {
+        subIdLoadedRef.current = true;
+        getSubIdPanelData(s).then(({ subIds, subIdDiagnostics }) => {
+          if (abortRef.current) return;
+          setData((prev) => prev ? ({ ...prev, subIds, subIdDiagnostics }) : prev);
+        }).catch(() => {});
+      }
       if (periodoFiltro === "hoje") {
         setAtualizandoHoje(true);
         await dispararBackfillHoje();
