@@ -190,6 +190,8 @@ export default function DashboardPage() {
   const [ultimaAtualizacao, setUltimaAtualizacao] = useState(null);
   const [comparacaoMensal, setComparacaoMensal] = useState(null);
   const [resumoSemana, setResumoSemana] = useState(null);
+  const [subIdsPanel, setSubIdsPanel] = useState(null);
+  const [subIdDiagnosticsPanel, setSubIdDiagnosticsPanel] = useState(null);
   const abortRef = useRef(false);
   const subIdLoadedRef = useRef(false);
 
@@ -217,7 +219,8 @@ export default function DashboardPage() {
         subIdLoadedRef.current = true;
         getSubIdPanelData(s).then(({ subIds, subIdDiagnostics }) => {
           if (abortRef.current) return;
-          setData((prev) => prev ? ({ ...prev, subIds, subIdDiagnostics }) : prev);
+          setSubIdsPanel(subIds);
+          setSubIdDiagnosticsPanel(subIdDiagnostics);
         }).catch(() => {});
       }
       if (periodoFiltro === "hoje") {
@@ -339,8 +342,8 @@ export default function DashboardPage() {
   };
 
   const kpis              = data?.kpis;
-  const subIds            = data?.subIds;
-  const subIdDiagnostics  = data?.subIdDiagnostics;
+  const subIds            = subIdsPanel ?? data?.subIds;
+  const subIdDiagnostics  = subIdDiagnosticsPanel ?? data?.subIdDiagnostics;
   const ranking           = data?.ranking || [];
   const operationalAlerts = data?.operationalAlerts || [];
 
