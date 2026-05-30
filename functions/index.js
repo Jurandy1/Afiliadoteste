@@ -939,6 +939,16 @@ exports.shopeeBackfillNow = onRequest(
     memory: "1GiB",
   },
   async (req, res) => {
+    // CORS: permite chamada do dashboard (Vercel)
+    res.set("Access-Control-Allow-Origin", "*");
+    res.set("Access-Control-Allow-Methods", "POST, OPTIONS");
+    res.set("Access-Control-Allow-Headers", "Authorization, Content-Type");
+
+    // Responde preflight OPTIONS
+    if (req.method === "OPTIONS") {
+      res.status(204).send("");
+      return;
+    }
     const secret = (process.env.META_SYNC_SECRET || "").trim();
     const provided = String(req.get("authorization") || "").trim();
     if (!secret || provided !== `Bearer ${secret}`) {
