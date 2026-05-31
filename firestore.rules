@@ -99,6 +99,14 @@ service cloud.firestore {
       allow delete: if true;
     }
 
+    match /backup_produtos/{produtoId} {
+      allow read: if true;
+      allow create: if request.resource.data.keys().hasAny(['itemId', 'shopId'])
+                    && request.resource.data.itemId is string;
+      allow update: if true;
+      allow delete: if true;
+    }
+
     // ── Bloquear tudo que não foi explicitamente permitido ──────
     match /{document=**} {
       allow read, write: if false;

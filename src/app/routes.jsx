@@ -5,10 +5,12 @@ import {
   Bell,
   Target,
   Settings,
+  Archive,
 } from "lucide-react";
 import DashboardPage from "../pages/DashboardPage";
 import ShopeePage from "../pages/ShopeePage";
 import TrafficPage from "../pages/TrafficPage";
+import BackupPage from "../pages/BackupPage";
 import ImportsPage from "../pages/ImportsPage";
 import AuditPage from "../pages/AuditPage";
 import SettingsPage from "../pages/SettingsPage";
@@ -35,6 +37,13 @@ export const ROUTES = {
     icon: Target,
     Page: TrafficPage,
   },
+  backup: {
+    id: "backup",
+    title: "Backup",
+    sub: "Produtos reserva — preço, comissão, alertas",
+    icon: Archive,
+    Page: BackupPage,
+  },
   imports: {
     id: "imports",
     title: "Importar",
@@ -59,4 +68,4 @@ export const ROUTES = {
   },
 };
 
-export const ROUTE_ORDER = ["dashboard", "shopee", "traffic", "imports", "audit", "settings"];
+export const ROUTE_ORDER = ["dashboard", "shopee", "traffic", "backup", "imports", "audit", "settings"];

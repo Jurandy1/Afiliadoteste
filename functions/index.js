@@ -1092,3 +1092,321 @@ exports.shopeeProductTest = onRequest(
     }
   },
 );
+
+function parseShopeeUrl(url) {
+  if (!url || typeof url !== "string") return null;
+  const cleaned = url.trim();
+
+  let m = cleaned.match(/\/product\/(\d+)\/(\d+)/);
+  if (m) return { shopId: m[1], itemId: m[2], isShort: false };
+
+  m = cleaned.match(/-i\.(\d+)\.(\d+)/);
+  if (m) return { shopId: m[1], itemId: m[2], isShort: false };
+
+  if (cleaned.includes("s.shopee.com.br")) {
+    return { shopId: null, itemId: null, isShort: true, shortUrl: cleaned };
+  }
+
+  return null;
+}
+
+async function shopeeQueryProduct(itemId, shopId) {
+  const appId = process.env.SHOPEE_APP_ID;
+  const secret = process.env.SHOPEE_SECRET;
+  const timestamp = Math.floor(Date.now() / 1000);
+
+  const query = `{
+    productOfferV2(itemId:${itemId}, shopId:${shopId}) {
+      nodes {
+        itemId
+        shopId
+        productName
+        productLink
+        offerLink
+        price
+        priceMin
+        priceMax
+        commissionRate
+        sales
+        imageUrl
+        ratingStar
+        shopName
+        shopType
+        productCatIds
+        periodStartTime
+        periodEndTime
+      }
+    }
+  }`;
+
+  const payload = JSON.stringify({ query });
+  const baseString = `${appId}${timestamp}${payload}${secret}`;
+  const crypto = require("crypto");
+  const signature = crypto.createHash("sha256").update(baseString).digest("hex");
+
+  const response = await fetch("https://open-api.affiliate.shopee.com.br/graphql", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `SHA256 Credential=${appId}, Timestamp=${timestamp}, Signature=${signature}`,
+    },
+    body: payload,
+  });
+
+  const data = await response.json().catch(() => ({}));
+  if (data?.errors) {
+    throw new Error(`API Shopee retornou erros: ${JSON.stringify(data.errors)}`);
+  }
+
+  const nodes = data?.data?.productOfferV2?.nodes || [];
+  return nodes.length ? nodes[0] : null;
+}
+
+function normalizeShopeeProduct(node) {
+  return {
+    itemId: String(node.itemId || ""),
+    shopId: String(node.shopId || ""),
+    nome: String(node.productName || ""),
+    preco: Number(node.price || 0),
+    precoMin: Number(node.priceMin || 0),
+    precoMax: Number(node.priceMax || 0),
+    comissao_pct: Number(node.commissionRate || 0) * 100,
+    vendas_shopee: Number(node.sales || 0),
+    imagem: String(node.imageUrl || ""),
+    rating: Number(node.ratingStar || 0),
+    loja: String(node.shopName || ""),
+    shopType: Array.isArray(node.shopType) ? node.shopType : [],
+    categoriaIds: Array.isArray(node.productCatIds) ? node.productCatIds : [],
+    linkProduto: String(node.productLink || ""),
+    linkAfiliado: String(node.offerLink || ""),
+    periodoInicio: node.periodStartTime ? Number(node.periodStartTime) : null,
+    periodoFim: node.periodEndTime ? Number(node.periodEndTime) : null,
+  };
+}
+
+exports.shopeeProductLookup = onRequest(
+  {
+    secrets: ["META_SYNC_SECRET", "SHOPEE_APP_ID", "SHOPEE_SECRET"],
+    timeoutSeconds: 30,
+    memory: "256MiB",
+  },
+  async (req, res) => {
+    res.set("Access-Control-Allow-Origin", "*");
+    res.set("Access-Control-Allow-Methods", "POST, OPTIONS");
+    res.set("Access-Control-Allow-Headers", "Authorization, Content-Type");
+
+    if (req.method === "OPTIONS") {
+      res.status(204).send("");
+      return;
+    }
+
+    const secret = (process.env.META_SYNC_SECRET || "").trim();
+    const provided = String(req.get("authorization") || "").trim();
+    if (!secret || provided !== `Bearer ${secret}`) {
+      res.status(401).json({ error: "unauthorized" });
+      return;
+    }
+
+    const url = req.query.url || req.body?.url;
+    if (!url) {
+      res.status(400).json({ error: "missing_url" });
+      return;
+    }
+
+    const parsed = parseShopeeUrl(url);
+    if (!parsed) {
+      res.status(400).json({ error: "invalid_url" });
+      return;
+    }
+
+    if (parsed.isShort) {
+      res.status(400).json({
+        error: "short_url_not_supported",
+        hint: "Links curtos (s.shopee.com.br) não são suportados. Cole a URL final da página do produto.",
+      });
+      return;
+    }
+
+    try {
+      const node = await shopeeQueryProduct(parsed.itemId, parsed.shopId);
+      if (!node) {
+        res.status(404).json({
+          error: "product_not_found",
+          hint: "O produto pode não estar no programa de afiliados ou ter sido removido.",
+        });
+        return;
+      }
+
+      const produto = normalizeShopeeProduct(node);
+
+      let historico = null;
+      try {
+        const histRef = db.collection("produtos").doc(`item_${parsed.itemId}`);
+        const histSnap = await histRef.get();
+        if (histSnap.exists) {
+          const h = histSnap.data() || {};
+          historico = {
+            ja_vendeu: true,
+            vendas_minhas: Number(h.vendas || 0),
+            vendas_diretas: Number(h.vendas_diretas || 0),
+            vendas_indiretas: Number(h.vendas_indiretas || 0),
+            comissao_total_minha: Number(h.comissao_total || 0),
+            comissao_concluida: Number(h.comissao_concluida || 0),
+            comissao_pendente: Number(h.comissao_pendente || 0),
+            gmv_total_meu: Number(h.gmv_total || 0),
+            preco_quando_vendi: Number(h.preco || 0),
+            comissao_pct_quando_vendi: Number(h.comissao_pct || 0),
+            ultima_venda: h.updatedAt?.toDate?.() || null,
+            sub_ids: Array.isArray(h.sub_ids) ? h.sub_ids : [],
+          };
+        } else {
+          historico = { ja_vendeu: false };
+        }
+      } catch {
+        historico = { ja_vendeu: false };
+      }
+
+      let jaSalvoComoBackup = false;
+      try {
+        const backupRef = db.collection("backup_produtos").doc(`item_${parsed.itemId}`);
+        const backupSnap = await backupRef.get();
+        jaSalvoComoBackup = backupSnap.exists;
+      } catch {
+        jaSalvoComoBackup = false;
+      }
+
+      res.json({ success: true, produto, historico, jaSalvoComoBackup });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err?.message || String(err) });
+    }
+  },
+);
+
+exports.shopeeBackupRefreshNow = onRequest(
+  {
+    secrets: ["META_SYNC_SECRET", "SHOPEE_APP_ID", "SHOPEE_SECRET"],
+    timeoutSeconds: 30,
+    memory: "256MiB",
+  },
+  async (req, res) => {
+    res.set("Access-Control-Allow-Origin", "*");
+    res.set("Access-Control-Allow-Methods", "POST, OPTIONS");
+    res.set("Access-Control-Allow-Headers", "Authorization, Content-Type");
+
+    if (req.method === "OPTIONS") {
+      res.status(204).send("");
+      return;
+    }
+
+    const secret = (process.env.META_SYNC_SECRET || "").trim();
+    const provided = String(req.get("authorization") || "").trim();
+    if (!secret || provided !== `Bearer ${secret}`) {
+      res.status(401).json({ error: "unauthorized" });
+      return;
+    }
+
+    const itemId = req.query.itemId || req.body?.itemId;
+    if (!itemId) {
+      res.status(400).json({ error: "missing_itemId" });
+      return;
+    }
+
+    try {
+      const backupRef = db.collection("backup_produtos").doc(`item_${itemId}`);
+      const backupSnap = await backupRef.get();
+      if (!backupSnap.exists) {
+        res.status(404).json({ error: "not_in_backup" });
+        return;
+      }
+
+      const dadosAtuais = backupSnap.data() || {};
+      const shopId = dadosAtuais.shopId;
+      if (!shopId) {
+        res.status(400).json({ error: "missing_shopId_in_backup" });
+        return;
+      }
+
+      const node = await shopeeQueryProduct(itemId, shopId);
+      if (!node) {
+        await backupRef.set({
+          status_api: "produto_nao_encontrado",
+          ultima_verificacao: FieldValue.serverTimestamp(),
+        }, { merge: true });
+
+        res.json({
+          success: true,
+          status: "produto_nao_encontrado",
+          message: "Produto não retornou na API. Pode ter saído do programa.",
+        });
+        return;
+      }
+
+      const novoSnapshot = normalizeShopeeProduct(node);
+      const precoAntigo = Number(dadosAtuais.preco || 0);
+      const comissaoAntiga = Number(dadosAtuais.comissao_pct || 0);
+      const precoNovo = novoSnapshot.preco;
+      const comissaoNova = novoSnapshot.comissao_pct;
+
+      const alertas = [];
+
+      if (comissaoAntiga > 0 && comissaoNova === 0) {
+        alertas.push({
+          tipo: "comissao_zero",
+          nivel: "critico",
+          mensagem: "Comissão caiu para 0%. Produto saiu do programa de afiliados.",
+        });
+      }
+
+      if (novoSnapshot.periodoFim) {
+        const agoraSegs = Math.floor(Date.now() / 1000);
+        const diasRestantes = Math.floor((novoSnapshot.periodoFim - agoraSegs) / 86400);
+        if (diasRestantes >= 0 && diasRestantes < 7) {
+          alertas.push({
+            tipo: "periodo_acaba",
+            nivel: "critico",
+            mensagem: `Período de comissão termina em ${diasRestantes} dia(s).`,
+            diasRestantes,
+          });
+        }
+      }
+
+      if (precoAntigo > 0 && precoNovo > precoAntigo * 1.2) {
+        const pct = ((precoNovo - precoAntigo) / precoAntigo) * 100;
+        alertas.push({
+          tipo: "preco_subiu",
+          nivel: "aviso",
+          mensagem: `Preço subiu ${pct.toFixed(1)}% (R$ ${precoAntigo.toFixed(2)} → R$ ${precoNovo.toFixed(2)}).`,
+        });
+      }
+
+      if (comissaoAntiga > 0 && comissaoNova > 0 && comissaoNova < comissaoAntiga * 0.7) {
+        const pct = ((comissaoAntiga - comissaoNova) / comissaoAntiga) * 100;
+        alertas.push({
+          tipo: "comissao_caiu",
+          nivel: "aviso",
+          mensagem: `Comissão caiu ${pct.toFixed(1)}% (${comissaoAntiga.toFixed(1)}% → ${comissaoNova.toFixed(1)}%).`,
+        });
+      }
+
+      if (comissaoAntiga > 0 && comissaoNova > comissaoAntiga * 1.2) {
+        const pct = ((comissaoNova - comissaoAntiga) / comissaoAntiga) * 100;
+        alertas.push({
+          tipo: "comissao_subiu",
+          nivel: "bom",
+          mensagem: `Comissão subiu ${pct.toFixed(1)}% (${comissaoAntiga.toFixed(1)}% → ${comissaoNova.toFixed(1)}%). Oportunidade!`,
+        });
+      }
+
+      await backupRef.set({
+        ...novoSnapshot,
+        status_api: "ok",
+        alertas,
+        ultima_verificacao: FieldValue.serverTimestamp(),
+      }, { merge: true });
+
+      res.json({ success: true, produto: novoSnapshot, alertas });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err?.message || String(err) });
+    }
+  },
+);
