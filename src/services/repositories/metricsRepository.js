@@ -620,10 +620,11 @@ export async function getResumoSemana() {
 export async function getSubIdPanelData(settings = {}) {
   const { impostoMeta = 0, impostoNf = 0 } = settings || {};
 
-  const [metaAds, pinterest, subIdVendas] = await Promise.all([
+  const [metaAds, pinterest, subIdVendas, cliquesData] = await Promise.all([
     getMetaAds(null).catch(() => []),
     getPinterest(null).catch(() => []),
     getSubIdVendas().catch(() => []),
+    getCliques(null).catch(() => []),
   ]);
 
   const metaBySubId = {};
@@ -650,10 +651,18 @@ export async function getSubIdPanelData(settings = {}) {
     vendasBySubId[key] = v;
   });
 
+  const cliquesBySubId = {};
+  cliquesData.forEach((c) => {
+    const sid = c.sub_id_norm || c.sub_id || "";
+    if (!sid) return;
+    cliquesBySubId[sid] = (cliquesBySubId[sid] || 0) + (c.cliques || 0);
+  });
+
   const allSubIds = new Set([
     ...Object.keys(vendasBySubId),
     ...Object.keys(metaBySubId),
     ...Object.keys(pinBySubId),
+    ...Object.keys(cliquesBySubId),
   ]);
 
   let subIds = [...allSubIds].map((id) => {
@@ -661,6 +670,7 @@ export async function getSubIdPanelData(settings = {}) {
     const sid = v.subid ?? (id === "missing_subid" ? "" : id);
     const gastoAds = (metaBySubId[sid]?.gasto || 0) + (pinBySubId[sid]?.gasto || 0);
     const cliquesAds = (metaBySubId[sid]?.cliques_anuncio || 0) + (pinBySubId[sid]?.cliques_anuncio || 0);
+    const clShopee = sid ? (cliquesBySubId[sid] || 0) : 0;
 
     const comissoes = v.comissoes || 0;
     const faturamento = v.faturamento || 0;
@@ -688,8 +698,8 @@ export async function getSubIdPanelData(settings = {}) {
       qtd_itens,
       ticket_medio,
       cliques_anuncio: cliquesAds,
-      cliques_shopee: 0,
-      batimento: cliquesAds > 0 ? 0 : 0,
+      cliques_shopee: clShopee,
+      batimento: cliquesAds > 0 ? (clShopee / cliquesAds) : 0,
       imposto_total,
     };
   });
