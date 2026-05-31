@@ -710,3 +710,21 @@ export async function getSubIdPanelData(settings = {}) {
 
   return { subIds, subIdDiagnostics };
 }
+
+export async function getSubIdVendasMap() {
+  const snap = await getDocs(collection(db, "subid_vendas"));
+  const map = {};
+  snap.forEach((d) => {
+    const data = d.data() || {};
+    const key = String(d.id || "").trim();
+    if (!key) return;
+    map[key] = {
+      subid: d.id,
+      comissao: Number(data.comissoes || 0),
+      faturamento: Number(data.faturamento || 0),
+      vendas: Number(data.vendas_diretas || 0) + Number(data.vendas_indiretas || 0),
+      qtdItens: Number(data.qtd_itens || 0),
+    };
+  });
+  return map;
+}

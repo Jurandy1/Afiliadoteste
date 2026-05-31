@@ -5,6 +5,7 @@ import {
   BarChart2, Eye, Lightbulb, Activity, Search, RefreshCw, Clock3,
 } from "lucide-react";
 import { getMetaDemographics } from "../services/repositories/campaignsRepository";
+import { getSubIdVendasMap } from "../services/repositories/metricsRepository";
 import { fmt, fmtNum } from "../utils/formatters";
 import LoadingSpinner from "../components/layout/LoadingSpinner";
 import Badge from "../components/cards/Badge";
@@ -914,6 +915,173 @@ function MetaDemographicsPanel() {
   );
 }
 
+function RoasRealPanel({ meta, subIdMap }) {
+  const itens = useMemo(() => {
+    if (!meta || meta.length === 0) return [];
+
+    return meta
+      .map((m) => {
+        const subKey = String(m.subid || "").trim();
+        const subData = subKey ? (subIdMap[subKey] || null) : null;
+        const gasto = Number(m.valorUsado || 0);
+        const comissao = subData ? subData.comissao : 0;
+        const vendas = subData ? subData.vendas : 0;
+        const roas = gasto > 0 ? comissao / gasto : 0;
+        const lucro = comissao - gasto;
+
+        return {
+          nome: m.nomeAnuncio || "—",
+          subid: subKey,
+          gasto,
+          comissao,
+          vendas,
+          roas,
+          lucro,
+          temAtribuicao: !!subData,
+        };
+      })
+      .filter((it) => it.gasto > 0)
+      .sort((a, b) => b.roas - a.roas);
+  }, [meta, subIdMap]);
+
+  if (itens.length === 0) {
+    return null;
+  }
+
+  const totalGasto = itens.reduce((s, it) => s + it.gasto, 0);
+  const totalComissao = itens.reduce((s, it) => s + it.comissao, 0);
+  const totalLucro = totalComissao - totalGasto;
+  const roasGeral = totalGasto > 0 ? totalComissao / totalGasto : 0;
+
+  const lucrativos = itens.filter((it) => it.roas >= 1).length;
+  const empate = itens.filter((it) => it.roas > 0 && it.roas < 1).length;
+  const semVendas = itens.filter((it) => it.roas === 0).length;
+
+  return (
+    <div className="mb-4 p-4 bg-white border border-gray-200 rounded">
+      <div className="flex items-center justify-between mb-3">
+        <div>
+          <h3 className="text-sm font-semibold text-gray-700">
+            💰 ROAS Real (Comissão Shopee ÷ Gasto Meta)
+          </h3>
+          <p className="text-xs text-gray-500 mt-0.5">
+            Cruzamento por subid do backend
+          </p>
+        </div>
+        <div className="text-right">
+          <div className="text-xs text-gray-500">ROAS geral</div>
+          <div className={`text-lg font-bold ${roasGeral >= 1 ? "text-green-600" : "text-red-600"}`}>
+            {roasGeral.toFixed(2)}x
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-3 gap-2 mb-3 text-xs">
+        <div className="p-2 bg-green-50 border border-green-200 rounded text-center">
+          <div className="font-bold text-green-700">{lucrativos}</div>
+          <div className="text-green-600">Lucrativos (ROAS ≥ 1x)</div>
+        </div>
+        <div className="p-2 bg-orange-50 border border-orange-200 rounded text-center">
+          <div className="font-bold text-orange-700">{empate}</div>
+          <div className="text-orange-600">No vermelho (ROAS &lt; 1x)</div>
+        </div>
+        <div className="p-2 bg-gray-50 border border-gray-200 rounded text-center">
+          <div className="font-bold text-gray-700">{semVendas}</div>
+          <div className="text-gray-600">Sem vendas atribuídas</div>
+        </div>
+      </div>
+
+      <div className="mb-3 p-2 bg-blue-50 border border-blue-200 rounded text-sm">
+        <div className="grid grid-cols-3 gap-2">
+          <div>
+            <div className="text-xs text-blue-600">Gasto Total</div>
+            <div className="font-bold text-blue-900">{fmt(totalGasto)}</div>
+          </div>
+          <div>
+            <div className="text-xs text-blue-600">Comissão Total</div>
+            <div className="font-bold text-blue-900">{fmt(totalComissao)}</div>
+          </div>
+          <div>
+            <div className="text-xs text-blue-600">Lucro Líquido</div>
+            <div className={`font-bold ${totalLucro >= 0 ? "text-green-700" : "text-red-700"}`}>
+              {fmt(totalLucro)}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead className="text-gray-500 border-b">
+            <tr>
+              <th className="text-left px-2 py-2">Anúncio</th>
+              <th className="text-right px-2 py-2">Gasto</th>
+              <th className="text-right px-2 py-2">Comissão</th>
+              <th className="text-right px-2 py-2">Lucro</th>
+              <th className="text-right px-2 py-2">Vendas</th>
+              <th className="text-right px-2 py-2">ROAS</th>
+              <th className="text-center px-2 py-2">Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {itens.slice(0, 30).map((it, idx) => {
+              const roasColor = it.roas >= 2
+                ? "text-green-600 font-bold"
+                : it.roas >= 1
+                ? "text-green-600"
+                : it.roas > 0
+                ? "text-orange-600"
+                : "text-red-600";
+              const lucroColor = it.lucro >= 0 ? "text-green-600" : "text-red-600";
+              const statusIcon = it.roas >= 2
+                ? "🟢"
+                : it.roas >= 1
+                ? "✅"
+                : it.roas > 0
+                ? "🟠"
+                : it.temAtribuicao
+                ? "🔴"
+                : "⚪";
+
+              return (
+                <tr key={`roas-${idx}`} className="border-b hover:bg-gray-50">
+                  <td className="px-2 py-2 font-medium">{it.nome}</td>
+                  <td className="px-2 py-2 text-right text-gray-700">{fmt(it.gasto)}</td>
+                  <td className="px-2 py-2 text-right text-gray-700">
+                    {it.temAtribuicao ? fmt(it.comissao) : <span className="text-gray-400">—</span>}
+                  </td>
+                  <td className={`px-2 py-2 text-right ${lucroColor}`}>
+                    {it.temAtribuicao ? fmt(it.lucro) : <span className="text-gray-400">—</span>}
+                  </td>
+                  <td className="px-2 py-2 text-right text-gray-700">
+                    {it.temAtribuicao ? fmtNum(it.vendas) : <span className="text-gray-400">—</span>}
+                  </td>
+                  <td className={`px-2 py-2 text-right ${roasColor}`}>
+                    {it.temAtribuicao ? `${it.roas.toFixed(2)}x` : <span className="text-gray-400">—</span>}
+                  </td>
+                  <td className="px-2 py-2 text-center">{statusIcon}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {itens.length > 30 && (
+        <div className="text-xs text-gray-500 mt-2 text-center">
+          Mostrando 30 de {itens.length} anúncios (ordenados por ROAS).
+        </div>
+      )}
+
+      <div className="text-xs text-gray-400 mt-3">
+        ℹ️ <strong>ROAS Real</strong> = comissão Shopee atribuída ao subid ÷ gasto do anúncio Meta.
+        Anúncios sem vendas atribuídas (—) podem ser: tráfego que ainda não converteu,
+        ou subid no link Shopee diferente do nome do anúncio.
+      </div>
+    </div>
+  );
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // MAIN PAGE
 // ═══════════════════════════════════════════════════════════════════
@@ -923,6 +1091,19 @@ export default function TrafficPage() {
   const [metaQuery, setMetaQuery] = useState("");
   const [metaStatusFilter, setMetaStatusFilter] = useState("all");
   const [metaSort, setMetaSort] = useState("gasto_desc");
+  const [subIdMap, setSubIdMap] = useState({});
+
+  useEffect(() => {
+    let cancelado = false;
+    getSubIdVendasMap()
+      .then((map) => {
+        if (!cancelado) setSubIdMap(map);
+      })
+      .catch((err) => {
+        console.warn("[TrafficPage] Erro carregando subId_vendas:", err);
+      });
+    return () => { cancelado = true; };
+  }, []);
 
   if (loading) return <LoadingSpinner label="Carregando..." className="py-8" />;
 
@@ -1086,6 +1267,8 @@ export default function TrafficPage() {
       </div>
 
       <MetaDemographicsPanel />
+
+      <RoasRealPanel meta={meta} subIdMap={subIdMap} />
 
       {/* Tabela Meta Ads com AIDA score por linha */}
       <div className="bg-white rounded-lg border border-gray-200 overflow-hidden mb-4">
