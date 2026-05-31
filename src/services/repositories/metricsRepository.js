@@ -97,6 +97,28 @@ export async function getDashboardKPIsByPeriod(startDate, endDate) {
   const dailyRef = collection(db, "shopee_daily");
   let snap;
 
+  function calcOverlapRatio(filterStart, filterEnd, itemStart, itemEnd) {
+    if (!filterStart || !filterEnd || !itemStart || !itemEnd) return 0;
+
+    const fStart = new Date(`${filterStart}T00:00:00`).getTime();
+    const fEnd = new Date(`${filterEnd}T23:59:59`).getTime();
+    const iStart = new Date(`${itemStart}T00:00:00`).getTime();
+    const iEnd = new Date(`${itemEnd}T23:59:59`).getTime();
+
+    if (!Number.isFinite(fStart) || !Number.isFinite(fEnd) || !Number.isFinite(iStart) || !Number.isFinite(iEnd)) return 0;
+    if (fEnd < iStart || fStart > iEnd) return 0;
+
+    const overlapStart = Math.max(fStart, iStart);
+    const overlapEnd = Math.min(fEnd, iEnd);
+    const overlapMs = overlapEnd - overlapStart;
+    const itemTotalMs = iEnd - iStart;
+
+    if (itemTotalMs <= 0) return 0;
+    const ratio = overlapMs / itemTotalMs;
+    if (!Number.isFinite(ratio)) return 0;
+    return Math.max(0, Math.min(1, ratio));
+  }
+
   if (startDate === endDate) {
     const ref = doc(db, "shopee_daily", startDate);
     const snapDoc = await getDoc(ref);
@@ -138,13 +160,45 @@ export async function getDashboardKPIsByPeriod(startDate, endDate) {
     tot.vendas_indiretas += x.vendas_indiretas || 0;
   });
 
-  const gastoTotal = 0;
+  let gastoMeta = 0;
+  let gastoPin = 0;
+
+  try {
+    const [metaAds, pinterest] = await Promise.all([
+      getMetaAds(null).catch(() => []),
+      getPinterest(null).catch(() => []),
+    ]);
+
+    metaAds.forEach((m) => {
+      const itemStart = m.dataInicio || null;
+      const itemEnd = m.dataFim || itemStart;
+      const ratio = calcOverlapRatio(startDate, endDate, itemStart, itemEnd);
+      if (ratio <= 0) return;
+      gastoMeta += (Number(m.valorUsado) || 0) * ratio;
+    });
+
+    pinterest.forEach((p) => {
+      const itemStart = p.dataInicio || p.date || null;
+      const itemEnd = p.dataFim || p.date || itemStart;
+      const ratio = calcOverlapRatio(startDate, endDate, itemStart, itemEnd);
+      if (ratio <= 0) return;
+      gastoPin += (Number(p.spend) || 0) * ratio;
+    });
+  } catch (err) {
+    console.warn("[KPIsByPeriod] Erro ao calcular gasto Meta/Pin:", err);
+  }
+
+  const gastoTotal = gastoMeta + gastoPin;
   const lucro = tot.comissao_total - gastoTotal;
+  const roi = gastoTotal > 0 ? (lucro / gastoTotal) * 100 : 0;
+  const roas = gastoTotal > 0 ? tot.comissao_total / gastoTotal : 0;
 
   console.log("🔵 [KPIsByPeriod] RESULTADO:", {
     diasComDados: snap.size,
     comissao: tot.comissao_total,
     vendas: tot.vendas,
+    gastoMeta,
+    gastoPin,
   });
   return {
     comissao: tot.comissao_total,
@@ -155,16 +209,16 @@ export async function getDashboardKPIsByPeriod(startDate, endDate) {
     vendas: tot.vendas,
     vendasDiretas: tot.vendas_diretas,
     vendasIndiretas: tot.vendas_indiretas,
-    gastoMeta: 0,
-    gastoPin: 0,
-    gastoTotal: 0,
-    lucro,
-    roi: 0,
-    roas: 0,
+    gastoMeta: Math.round(gastoMeta * 100) / 100,
+    gastoPin: Math.round(gastoPin * 100) / 100,
+    gastoTotal: Math.round(gastoTotal * 100) / 100,
+    lucro: Math.round(lucro * 100) / 100,
+    roi: Math.round(roi * 100) / 100,
+    roas: Math.round(roas * 100) / 100,
     ticketMedio: tot.vendas > 0 ? tot.fat_bruto / tot.vendas : 0,
     lastUpdated: null,
     diasComDados: snap.size,
-    _source: "shopee_daily",
+    _source: "shopee_daily+meta_proporcional",
   };
 }
 
