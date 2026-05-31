@@ -749,6 +749,13 @@ export default function DashboardPage() {
         </div>
       )}
 
+      {/* Aviso quando filtro de período está ativo — painel SubID é histórico */}
+      {periodoFiltro !== "all" && subIds && subIds.length > 0 && subIdDiagnostics?.isReliable && (
+        <div className="mb-3 p-3 bg-orange-50 border border-orange-200 rounded text-sm text-orange-800">
+          ℹ️ O painel de "Detalhamento por SubID" abaixo mostra os totais por SubID do <strong>histórico completo</strong> . Os KPIs acima refletem apenas o período selecionado.
+        </div>
+      )}
+
       {subIds && subIds.length > 0 && subIdDiagnostics?.isReliable && (
         <div className="bg-white rounded-lg border border-gray-200 overflow-hidden mb-4">
           <div className="px-4 py-3 border-b border-gray-100">

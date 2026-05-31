@@ -1006,3 +1006,89 @@ exports.recalcularSumarioNow = onRequest(
     }
   },
 );
+
+exports.shopeeProductTest = onRequest(
+  {
+    secrets: ["META_SYNC_SECRET", "SHOPEE_APP_ID", "SHOPEE_SECRET"],
+    timeoutSeconds: 60,
+    memory: "256MiB",
+  },
+  async (req, res) => {
+    res.set("Access-Control-Allow-Origin", "*");
+    res.set("Access-Control-Allow-Methods", "POST, OPTIONS");
+    res.set("Access-Control-Allow-Headers", "Authorization, Content-Type");
+
+    if (req.method === "OPTIONS") {
+      res.status(204).send("");
+      return;
+    }
+
+    const secret = (process.env.META_SYNC_SECRET || "").trim();
+    const provided = String(req.get("authorization") || "").trim();
+    if (!secret || provided !== `Bearer ${secret}`) {
+      res.status(401).json({ error: "unauthorized" });
+      return;
+    }
+
+    const itemId = req.query.itemId || req.body?.itemId;
+    const shopId = req.query.shopId || req.body?.shopId;
+    if (!itemId || !shopId) {
+      res.status(400).json({ error: "missing_params", usage: "?itemId=XXX&shopId=YYY" });
+      return;
+    }
+
+    try {
+      const appId = process.env.SHOPEE_APP_ID;
+      const shopeeSecret = process.env.SHOPEE_SECRET;
+      const timestamp = Math.floor(Date.now() / 1000);
+
+      const query = `{
+        productOfferV2(itemId:${itemId}, shopId:${shopId}) {
+          nodes {
+            itemId
+            shopId
+            productName
+            productLink
+            offerLink
+            price
+            commissionRate
+            sales
+            imageUrl
+            ratingStar
+            shopName
+            shopType
+            priceMin
+            priceMax
+            productCatIds
+            periodStartTime
+            periodEndTime
+          }
+        }
+      }`;
+
+      const payload = JSON.stringify({ query });
+      const baseString = `${appId}${timestamp}${payload}${shopeeSecret}`;
+      const crypto = require("crypto");
+      const signature = crypto.createHash("sha256").update(baseString).digest("hex");
+
+      const response = await fetch("https://open-api.affiliate.shopee.com.br/graphql", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `SHA256 Credential=${appId}, Timestamp=${timestamp}, Signature=${signature}`,
+        },
+        body: payload,
+      });
+
+      const data = await response.json().catch(() => ({}));
+      res.json({
+        success: true,
+        statusCode: response.status,
+        statusOk: response.ok,
+        rawResponse: data,
+      });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err?.message || String(err) });
+    }
+  },
+);
