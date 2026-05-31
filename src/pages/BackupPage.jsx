@@ -1245,7 +1245,6 @@ function CardGrupo({ grupo, expandido, criterio, onCriterioChange, onToggleExpan
     if (!principal || backupsOrdenados.length === 0) return null;
     const melhor = backupsOrdenados[0];
     if (!melhor) return null;
-
     if (criterio === "comissao") {
       const cP = comissaoR$Do(principal);
       const cB = comissaoR$Do(melhor);
@@ -1262,29 +1261,208 @@ function CardGrupo({ grupo, expandido, criterio, onCriterioChange, onToggleExpan
     if (criterio === "rating") {
       const rP = Number(principal.rating || 0);
       const rB = Number(melhor.rating || 0);
-      if (rB > rP) {
-        return {
-          melhor,
-          motivo: `Rating melhor (${rB.toFixed(1)} vs ${rP.toFixed(1)})`,
-          detalhe: "Produtos com melhor avaliação convertem mais.",
-        };
-      }
+      if (rB > rP) return { melhor, motivo: `Rating melhor (${rB.toFixed(1)} vs ${rP.toFixed(1)})`, detalhe: "Produtos com melhor avaliação convertem mais." };
     }
     if (criterio === "vendas") {
       const vP = Number(principal.vendas_shopee || 0);
       const vB = Number(melhor.vendas_shopee || 0);
-      if (vB > vP) {
-        return {
-          melhor,
-          motivo: `Mais vendido (${vB} vs ${vP} vendas Shopee)`,
-          detalhe: "Produtos com mais histórico de vendas tendem a converter melhor.",
-        };
-      }
+      if (vB > vP) return { melhor, motivo: `Mais vendido (${vB} vs ${vP} vendas Shopee)`, detalhe: "Produtos com mais histórico tendem a converter melhor." };
     }
     return null;
   };
 
   const sugestao = calcularSugestao();
+
+  const ProdutoCardShopee = ({ produto, badge, badgeColor = "#3b82f6", isPrincipal = false }) => {
+    const comissaoR$ = comissaoR$Do(produto);
+    const handleCopiarLink = () => {
+      const link = produto.linkAfiliado || produto.linkProduto || "";
+      if (link) {
+        navigator.clipboard.writeText(link).then(() => alert("Link copiado!"));
+      } else {
+        alert("Nenhum link disponível para este produto.");
+      }
+    };
+
+    return (
+      <div
+        style={{
+          background: "white",
+          border: isPrincipal ? "2px solid #f97316" : "1px solid #e5e7eb",
+          borderRadius: "8px",
+          overflow: "hidden",
+          position: "relative",
+          boxSizing: "border-box",
+          display: "flex",
+          flexDirection: "column",
+        }}
+      >
+        <div
+          style={{
+            position: "absolute",
+            top: 0,
+            left: 0,
+            background: badgeColor,
+            color: "white",
+            fontSize: "10px",
+            fontWeight: 600,
+            padding: "3px 10px",
+            borderRadius: "0 0 6px 0",
+            zIndex: 1,
+          }}
+        >
+          {badge}
+        </div>
+
+        <div style={{ position: "relative", paddingTop: "100%", background: "#f5f5f5" }}>
+          {produto.imagem ? (
+            <img
+              src={produto.imagem}
+              alt={produto.nome}
+              style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                width: "100%",
+                height: "100%",
+                objectFit: "cover",
+              }}
+            />
+          ) : (
+            <div
+              style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                width: "100%",
+                height: "100%",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                color: "#9ca3af",
+                fontSize: "32px",
+              }}
+            >
+              📦
+            </div>
+          )}
+        </div>
+
+        <div style={{ padding: "8px", flex: 1, display: "flex", flexDirection: "column", gap: "4px" }}>
+          <p
+            style={{
+              fontSize: "11px",
+              color: "#111827",
+              margin: 0,
+              lineHeight: 1.4,
+              overflow: "hidden",
+              display: "-webkit-box",
+              WebkitLineClamp: 2,
+              WebkitBoxOrient: "vertical",
+              minHeight: "30px",
+            }}
+          >
+            {produto.apelido || produto.nome}
+          </p>
+
+          <p style={{ fontSize: "13px", fontWeight: 700, color: "#ee4d2d", margin: 0 }}>
+            {fmt(produto.preco)}
+          </p>
+
+          <div style={{ display: "flex", alignItems: "center", gap: "4px", flexWrap: "wrap" }}>
+            <span
+              style={{
+                fontSize: "10px",
+                background: "#fff0eb",
+                color: "#ee4d2d",
+                padding: "1px 5px",
+                borderRadius: "4px",
+                fontWeight: 600,
+              }}
+            >
+              {fmtPct(produto.comissao_pct)} comissão
+            </span>
+            {comissaoR$ > 0 && (
+              <span style={{ fontSize: "10px", color: "#16a34a", fontWeight: 600 }}>
+                +{fmt(comissaoR$)}
+              </span>
+            )}
+          </div>
+
+          {produto.vendas_shopee > 0 && (
+            <p style={{ fontSize: "10px", color: "#6b7280", margin: 0 }}>
+              {fmtNum(produto.vendas_shopee)} vendidos
+            </p>
+          )}
+
+          {produto.rating > 0 && (
+            <p style={{ fontSize: "10px", color: "#f59e0b", margin: 0 }}>
+              {"★".repeat(Math.round(Number(produto.rating || 0)))}
+              {"☆".repeat(5 - Math.round(Number(produto.rating || 0)))}
+              {" "}{Number(produto.rating).toFixed(1)}
+            </p>
+          )}
+
+          <div style={{ display: "flex", gap: "4px", marginTop: "auto", paddingTop: "4px" }}>
+            <button
+              type="button"
+              onClick={handleCopiarLink}
+              style={{
+                flex: 1,
+                fontSize: "11px",
+                padding: "6px 4px",
+                background: isPrincipal ? "#ee4d2d" : "#1a1a1a",
+                color: "white",
+                border: "none",
+                borderRadius: "4px",
+                cursor: "pointer",
+                fontWeight: 500,
+              }}
+            >
+              Obter link
+            </button>
+            <button
+              type="button"
+              onClick={() => onRemoverBackup(produto.itemId)}
+              style={{
+                padding: "6px 8px",
+                background: "transparent",
+                border: "1px solid #e5e7eb",
+                borderRadius: "4px",
+                cursor: "pointer",
+                fontSize: "11px",
+                color: "#ef4444",
+              }}
+              title="Remover"
+            >
+              🗑️
+            </button>
+          </div>
+
+          {isPrincipal && (
+            <button
+              type="button"
+              onClick={onTrocarPrincipal}
+              disabled={backups.length === 0}
+              style={{
+                width: "100%",
+                fontSize: "10px",
+                padding: "4px",
+                background: "transparent",
+                border: "1px solid #f97316",
+                color: "#f97316",
+                borderRadius: "4px",
+                cursor: backups.length === 0 ? "not-allowed" : "pointer",
+                opacity: backups.length === 0 ? 0.5 : 1,
+              }}
+            >
+              ❌ Pausar e trocar
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div className="bg-white border border-gray-200 rounded-lg p-4">
@@ -1317,13 +1495,10 @@ function CardGrupo({ grupo, expandido, criterio, onCriterioChange, onToggleExpan
                 <span>Sugestão</span>
               </div>
               <div className="text-sm text-blue-800 mt-1">
-                Trocar Principal por <strong>{sugestao.melhor.apelido || sugestao.melhor.nome}</strong> ({sugestao.melhor.loja})
+                Trocar por <strong>{sugestao.melhor.apelido || sugestao.melhor.nome}</strong>
               </div>
               <div className="text-xs text-blue-700 mt-1">
                 <strong>Motivo:</strong> {sugestao.motivo}
-              </div>
-              <div className="text-xs text-blue-600 mt-0.5">
-                {sugestao.detalhe}
               </div>
               <button
                 type="button"
@@ -1335,48 +1510,13 @@ function CardGrupo({ grupo, expandido, criterio, onCriterioChange, onToggleExpan
             </div>
           )}
 
-          {principal && (
-            <div className="p-3 bg-yellow-50 border border-yellow-200 rounded mb-3">
-              <div className="flex items-start gap-3">
-                {principal.imagem && <img src={principal.imagem} alt="" className="w-16 h-16 object-cover rounded" />}
-                <div className="flex-1 min-w-0">
-                  <div className="font-medium text-sm flex items-center gap-2">
-                    <Star size={14} className="text-yellow-600" />
-                    <span>Principal: {principal.apelido || principal.nome}</span>
-                  </div>
-                  <div className="text-xs text-gray-600 flex items-center gap-1">
-                    <Store size={12} className="text-gray-400" />
-                    <span>{principal.loja}</span>
-                  </div>
-                  <div className="text-xs mt-1 flex items-center gap-2 flex-wrap">
-                    <span>{fmt(principal.preco)} · {fmtPct(principal.comissao_pct)} ({fmt(comissaoR$Do(principal))})</span>
-                    {principal.rating && (
-                      <span className="inline-flex items-center gap-1">
-                        <Star size={12} className="text-gray-400" />
-                        <span>{Number(principal.rating).toFixed(1)}</span>
-                      </span>
-                    )}
-                  </div>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={onTrocarPrincipal}
-                disabled={backups.length === 0}
-                className="mt-2 w-full px-3 py-1.5 bg-orange-100 text-orange-700 text-sm rounded hover:bg-orange-200 disabled:bg-gray-100 disabled:text-gray-400"
-              >
-                Pausar e trocar principal
-              </button>
-            </div>
-          )}
-
           {backups.length > 0 && (
-            <div className="flex items-center gap-2 mb-2 text-xs">
-              <span className="text-gray-600">Ordenar backups por:</span>
+            <div className="flex items-center gap-2 mb-3 text-xs">
+              <span className="text-gray-600">Ordenar por:</span>
               {[
-                ["comissao", "Comissão (R$)"],
-                ["rating", "Rating"],
-                ["vendas", "Vendas"],
+                ["comissao", "💰 Comissão"],
+                ["rating", "⭐ Rating"],
+                ["vendas", "📊 Vendas"],
               ].map(([id, label]) => (
                 <button
                   key={id}
@@ -1390,87 +1530,68 @@ function CardGrupo({ grupo, expandido, criterio, onCriterioChange, onToggleExpan
             </div>
           )}
 
-          <div className="space-y-2">
-            {backupsOrdenados.length === 0 ? (
-              <div className="text-center py-4 text-sm text-gray-500 bg-gray-50 rounded">
-                Nenhum backup ainda. Adicione produtos para comparar.
-              </div>
-            ) : (
-              backupsOrdenados.map((b, idx) => {
-                const cB = comissaoR$Do(b);
-                const cP = comissaoR$Do(principal);
-                const diffR$ = cB - cP;
-                const diffPct = cP > 0 ? ((cB - cP) / cP) * 100 : 0;
-                const isMelhor = diffR$ > 0;
-                const isPior = diffR$ < 0;
-                const corDiff = isMelhor ? "text-green-700" : isPior ? "text-red-600" : "text-gray-500";
-                const setaDiff = isMelhor ? "▲" : isPior ? "▼" : "—";
-
-                return (
-                  <div key={b.itemId} className={`flex items-start gap-3 p-2 border rounded ${idx === 0 && sugestao ? "border-blue-300 bg-blue-50/30" : "border-gray-200"}`}>
-                    {b.imagem && <img src={b.imagem} alt="" className="w-12 h-12 object-cover rounded" />}
-                    <div className="flex-1 min-w-0">
-                      <div className="text-sm font-medium truncate">
-                        {b.apelido || b.nome}
-                        {idx === 0 && sugestao && <span className="ml-2 text-xs text-blue-700 font-bold">Recomendado</span>}
-                      </div>
-                      <div className="text-xs text-gray-500 flex items-center gap-1">
-                        <Store size={12} className="text-gray-400" />
-                        <span>{b.loja}</span>
-                      </div>
-                      <div className="text-xs mt-0.5 flex items-center gap-2">
-                        <span>{fmt(b.preco)} · {fmtPct(b.comissao_pct)} ({fmt(cB)})</span>
-                        {b.rating && (
-                          <span className="inline-flex items-center gap-1">
-                            <Star size={12} className="text-gray-400" />
-                            <span>{Number(b.rating).toFixed(1)}</span>
-                          </span>
-                        )}
-                      </div>
-                      {principal && cP !== cB && (
-                        <div className={`text-xs mt-1 font-medium ${corDiff}`}>
-                          {setaDiff} {isMelhor ? "+" : ""}{fmt(Math.abs(diffR$))} ({isMelhor ? "+" : "-"}{Math.abs(diffPct).toFixed(0)}%) vs principal
-                        </div>
-                      )}
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => onRemoverBackup(b.itemId)}
-                      className="text-xs text-red-600 hover:bg-red-50 px-2 py-1 rounded flex-shrink-0"
-                    >
-                      <Trash2 size={14} />
-                    </button>
-                  </div>
-                );
-              })
-            )}
-          </div>
-
-          <button
-            type="button"
-            onClick={onAdicionarBackup}
-            className="mt-3 w-full px-3 py-1.5 bg-blue-50 text-blue-700 text-sm rounded hover:bg-blue-100 border border-dashed border-blue-300"
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))",
+              gap: "10px",
+              marginBottom: "12px",
+            }}
           >
-            <span className="inline-flex items-center gap-2">
-              <Plus size={14} />
+            {principal && (
+              <ProdutoCardShopee
+                produto={principal}
+                badge="⭐ Principal"
+                badgeColor="#f97316"
+                isPrincipal
+              />
+            )}
+
+            {backupsOrdenados.map((b, idx) => (
+              <ProdutoCardShopee
+                key={b.itemId}
+                produto={b}
+                badge={`Backup ${idx + 1}${idx === 0 && sugestao ? " 🏆" : ""}`}
+                badgeColor={idx === 0 && sugestao ? "#16a34a" : "#3b82f6"}
+                isPrincipal={false}
+              />
+            ))}
+
+            <button
+              type="button"
+              onClick={onAdicionarBackup}
+              style={{
+                border: "2px dashed #d1d5db",
+                borderRadius: "8px",
+                background: "transparent",
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: "6px",
+                minHeight: "200px",
+                cursor: "pointer",
+                color: "#9ca3af",
+                fontSize: "12px",
+              }}
+            >
+              <Plus size={20} />
               <span>Adicionar backup</span>
-            </span>
-          </button>
+            </button>
+          </div>
 
           {grupo.historico && grupo.historico.length > 0 && (
             <div className="mt-3 pt-3 border-t border-gray-200">
-              <div className="text-xs font-medium text-gray-700 mb-1">Histórico de trocas ({grupo.historico.length})</div>
+              <div className="text-xs font-medium text-gray-700 mb-1">
+                📜 Histórico de trocas ({grupo.historico.length})
+              </div>
               <div className="space-y-1 max-h-40 overflow-y-auto">
                 {[...grupo.historico].reverse().map((h, i) => {
                   const dt = h.data?.toDate?.() || new Date(h.data);
                   return (
                     <div key={i} className="text-xs p-2 bg-gray-50 rounded">
-                      <div className="font-medium text-gray-700">
-                        {dt.toLocaleString("pt-BR")}
-                      </div>
-                      <div className="text-gray-600">
-                        Motivo: {h.motivo}
-                      </div>
+                      <div className="font-medium text-gray-700">{dt.toLocaleString("pt-BR")}</div>
+                      <div className="text-gray-600">Motivo: {h.motivo}</div>
                       <div className="text-gray-500">
                         {grupo.produtos[h.principalAntigo]?.loja || "?"} → {grupo.produtos[h.principalNovo]?.loja || "?"}
                       </div>
