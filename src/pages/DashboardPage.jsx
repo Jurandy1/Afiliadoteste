@@ -261,6 +261,7 @@ export default function DashboardPage() {
         kpis: {
           produtosAtivos: kpisFromSumario.produtosCount || produtos.length,
           totalComissao: kpisFromSumario.comissao,
+          comissaoEstimada: kpisFromSumario.comissaoEstimada || 0,
           comissaoConcluida: kpisFromSumario.comissaoConcluida,
           comissaoPendente: kpisFromSumario.comissaoPendente,
           comissaoCancelada: 0,
@@ -624,7 +625,15 @@ export default function DashboardPage() {
         )}
       </div>
 
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3 mb-4">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-8 gap-3 mb-4">
+        <KPICard
+          icon={<DollarSign size={18} />}
+          iconBg="bg-sky-50 text-sky-700"
+          label="Comissão Estimada"
+          value={fmt(kpis.comissaoEstimada)}
+          trend="Painel Shopee"
+          up={(kpis.comissaoEstimada || 0) >= 0}
+        />
         <KPICard
           icon={<DollarSign size={18} />}
           iconBg="bg-blue-50 text-blue-600"

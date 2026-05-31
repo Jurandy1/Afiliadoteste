@@ -25,10 +25,12 @@ export async function getDashboardKPIs() {
   const s = snap.data() || {};
   const gastoTotal = Number(s.gasto_total ?? ((s.gasto_meta || 0) + (s.gasto_pin || 0)));
   const comissao = Number(s.comissao_total || 0);
+  const comissaoEstimada = Number(s.comissao_estimada || 0);
   const lucro = comissao - gastoTotal;
 
   return {
     comissao,
+    comissaoEstimada,
     comissaoConcluida: Number(s.comissao_concluida || 0),
     comissaoPendente: Number(s.comissao_pendente || 0),
     fatBruto: Number(s.fat_bruto || 0),
@@ -117,6 +119,7 @@ export async function getDashboardKPIsByPeriod(startDate, endDate) {
     comissao_total: 0,
     comissao_concluida: 0,
     comissao_pendente: 0,
+    comissao_estimada: 0,
     fat_bruto: 0,
     vendas: 0,
     vendas_diretas: 0,
@@ -128,6 +131,7 @@ export async function getDashboardKPIsByPeriod(startDate, endDate) {
     tot.comissao_total += x.comissao_total || 0;
     tot.comissao_concluida += x.comissao_concluida || 0;
     tot.comissao_pendente += x.comissao_pendente || 0;
+    tot.comissao_estimada += x.comissao_estimada || 0;
     tot.fat_bruto += x.gmv_total || 0;
     tot.vendas += x.vendas || 0;
     tot.vendas_diretas += x.vendas_diretas || 0;
@@ -144,6 +148,7 @@ export async function getDashboardKPIsByPeriod(startDate, endDate) {
   });
   return {
     comissao: tot.comissao_total,
+    comissaoEstimada: tot.comissao_estimada,
     comissaoConcluida: tot.comissao_concluida,
     comissaoPendente: tot.comissao_pendente,
     fatBruto: tot.fat_bruto,
@@ -377,6 +382,7 @@ export async function getDashboardData(settings = {}) {
   );
 
   const totalComissao    = enriched.reduce((s, p) => s + (p.comissao_total || 0), 0);
+  const totalComissaoEstimada = enriched.reduce((s, p) => s + (p.comissao_estimada || 0), 0);
   const comissaoConcluida= enriched.reduce((s, p) => s + (p.comissao_concluida || 0), 0);
   const comissaoPendente = enriched.reduce((s, p) => s + (p.comissao_pendente  || 0), 0);
   const comissaoCancelada= enriched.reduce((s, p) => s + (p.comissao_cancelada || 0), 0);
@@ -435,6 +441,7 @@ export async function getDashboardData(settings = {}) {
     kpis: {
       produtosAtivos: enriched.length,
       totalComissao, comissaoConcluida, comissaoPendente, comissaoCancelada,
+      comissaoEstimada: totalComissaoEstimada,
       faturamentoBruto, totalVendas, vendasDiretas, vendasIndiretas, qtdItens,
       totalCliquesShopee, totalCliques, totalInvestimento: totalInvest,
       lucroEstimado, lucro, roas, roiGeral, convRate, cpcReal, ticketMedio,

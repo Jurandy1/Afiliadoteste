@@ -421,7 +421,7 @@ function buildShopeeQuery(startTs, endTs, scrollId) {
     ) {
       nodes {
         purchaseTime clickTime conversionId checkoutId conversionStatus
-        totalCommission sellerCommission netCommission
+        totalCommission sellerCommission netCommission grossCommission cappedCommission
         referrer utmContent device buyerType
         orders {
           orderId orderStatus shopType
@@ -527,6 +527,7 @@ function shopeeAggregate(nodes) {
         const refund = parseFloat(it.refundAmount || "0") || 0;
         const gmv = (actual > 0 ? actual : price * qty) - refund;
         const commission = parseFloat(it.itemCommission || it.itemTotalCommission || "0") || 0;
+        const comissaoEstimada = parseFloat(it.itemTotalCommission || it.itemCommission || "0") || 0;
 
         const isDireta = shopeeIsDireta(it.attributionType);
         const isIndireta = isDireta ? 0 : 1;
@@ -534,7 +535,17 @@ function shopeeAggregate(nodes) {
         const categoria = [it.categoryLv1Name, it.categoryLv2Name, it.categoryLv3Name]
           .filter(Boolean).join(" > ");
 
-        if (isCancel) continue;
+        const subKey = baseSubIdNorm || "missing_subid";
+
+        if (isCancel) {
+          if (prodMap[key]) {
+            prodMap[key].comissao_estimada += comissaoEstimada;
+          }
+          if (subIdMap[subKey]) {
+            subIdMap[subKey].comissoes_estimadas += comissaoEstimada;
+          }
+          continue;
+        }
 
         if (!prodMap[key]) {
           prodMap[key] = {
@@ -554,6 +565,7 @@ function shopeeAggregate(nodes) {
             comissao_concluida: 0,
             comissao_pendente: 0,
             comissao_cancelada: 0,
+            comissao_estimada: 0,
             vendas_diretas: 0,
             vendas_indiretas: 0,
             pedidos_pendentes: 0,
@@ -569,6 +581,7 @@ function shopeeAggregate(nodes) {
         p.vendas += qty;
         p.gmv_total += gmv;
         p.comissao_total += commission;
+        p.comissao_estimada += comissaoEstimada;
         if (price > 0 && (!p.preco || p.preco === 0)) p.preco = price;
         if (baseSubIdRaw) p.sub_ids.add(baseSubIdRaw);
 
@@ -589,17 +602,18 @@ function shopeeAggregate(nodes) {
         const canal = (it.channelType || node.referrer || "Others").trim() || "Others";
         p.canais[canal] = (p.canais[canal] || 0) + 1;
 
-        const subKey = baseSubIdNorm || "missing_subid";
         if (!subIdMap[subKey]) {
           subIdMap[subKey] = {
             subid: baseSubIdNorm || "",
             comissoes: 0,
+            comissoes_estimadas: 0,
             faturamento: 0,
             vendas_diretas: 0,
             vendas_indiretas: 0,
             qtd_itens: 0,
           };
         }
+        subIdMap[subKey].comissoes_estimadas += comissaoEstimada;
         subIdMap[subKey].comissoes += commission;
         subIdMap[subKey].faturamento += gmv;
         subIdMap[subKey].vendas_diretas += isDireta;
@@ -631,7 +645,6 @@ function agruparPorData(nodes) {
         ord.orderStatus || node.conversionStatus,
       );
       const isCancel = status === "cancelada";
-      if (isCancel) continue;
 
       for (const it of items) {
         const qty = parseInt(it.qty, 10) || 1;
@@ -641,24 +654,31 @@ function agruparPorData(nodes) {
         const gmv = (actual > 0 ? actual : price * qty) - refund;
         const commission =
           parseFloat(it.itemCommission || it.itemTotalCommission || "0") || 0;
+        const comissaoEstimada = parseFloat(it.itemTotalCommission || it.itemCommission || "0") || 0;
 
         const isDireta = shopeeIsDireta(it.attributionType);
         const isIndireta = isDireta ? 0 : 1;
 
         if (!dayMap[date]) {
-          dayMap[date] = {
-            data: date,
-            vendas: 0,
-            vendas_diretas: 0,
-            vendas_indiretas: 0,
-            gmv_total: 0,
-            comissao_total: 0,
-            comissao_concluida: 0,
-            comissao_pendente: 0,
-          };
+          if (!isCancel) {
+            dayMap[date] = {
+              data: date,
+              vendas: 0,
+              vendas_diretas: 0,
+              vendas_indiretas: 0,
+              gmv_total: 0,
+              comissao_total: 0,
+              comissao_concluida: 0,
+              comissao_pendente: 0,
+              comissao_estimada: 0,
+            };
+          }
         }
 
         const d = dayMap[date];
+        if (!d) continue;
+        d.comissao_estimada += comissaoEstimada;
+        if (isCancel) continue;
         d.vendas += qty;
         d.vendas_diretas += isDireta;
         d.vendas_indiretas += isIndireta;
@@ -711,6 +731,7 @@ async function recalcularSumario(db) {
   let comissaoTotal = 0;
   let comissaoConcluida = 0;
   let comissaoPendente = 0;
+  let comissaoEstimada = 0;
   let fatBruto = 0;
   let vendasTotal = 0;
   let vendasDiretas = 0;
@@ -721,6 +742,7 @@ async function recalcularSumario(db) {
     comissaoTotal += Number(p.comissao_total || 0);
     comissaoConcluida += Number(p.comissao_concluida || 0);
     comissaoPendente += Number(p.comissao_pendente || 0);
+    comissaoEstimada += Number(p.comissao_estimada || 0);
     fatBruto += Number(p.gmv_total || 0);
     vendasTotal += Number(p.vendas || 0);
     vendasDiretas += Number(p.vendas_diretas || 0);
@@ -749,6 +771,7 @@ async function recalcularSumario(db) {
     comissao_total: Math.round(comissaoTotal * 1000) / 1000,
     comissao_concluida: Math.round(comissaoConcluida * 1000) / 1000,
     comissao_pendente: Math.round(comissaoPendente * 1000) / 1000,
+    comissao_estimada: Math.round(comissaoEstimada * 1000) / 1000,
     fat_bruto: Math.round(fatBruto * 100) / 100,
     vendas_total: vendasTotal,
     vendas_diretas: vendasDiretas,
@@ -760,7 +783,10 @@ async function recalcularSumario(db) {
     last_updated: FieldValue.serverTimestamp(),
   };
 
-  await db.collection("sumarios").doc("dashboard").set(sumario);
+  const batch = db.batch();
+  batch.set(db.collection("sumarios").doc("dashboard"), sumario);
+  batch.set(db.collection("sumarios").doc("atual"), sumario);
+  await batch.commit();
   console.log(`[recalcularSumario] OK em ${Date.now() - inicio}ms`);
 
   return sumario;
