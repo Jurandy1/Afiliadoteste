@@ -1410,3 +1410,182 @@ exports.shopeeBackupRefreshNow = onRequest(
     }
   },
 );
+
+exports.shopeeCanceladosTest = onRequest(
+  {
+    secrets: ["META_SYNC_SECRET", "SHOPEE_APP_ID", "SHOPEE_SECRET"],
+    timeoutSeconds: 540,
+    memory: "512MiB",
+  },
+  async (req, res) => {
+    res.set("Access-Control-Allow-Origin", "*");
+    res.set("Access-Control-Allow-Methods", "POST, OPTIONS");
+    res.set("Access-Control-Allow-Headers", "Authorization, Content-Type");
+
+    if (req.method === "OPTIONS") {
+      res.status(204).send("");
+      return;
+    }
+
+    const secret = (process.env.META_SYNC_SECRET || "").trim();
+    const provided = String(req.get("authorization") || "").trim();
+    if (!secret || provided !== `Bearer ${secret}`) {
+      res.status(401).json({ error: "unauthorized" });
+      return;
+    }
+
+    const appId = process.env.SHOPEE_APP_ID;
+    const shopeeSecret = process.env.SHOPEE_SECRET;
+    const crypto = require("crypto");
+
+    const inicio = Math.floor(new Date("2026-05-01T00:00:00-03:00").getTime() / 1000);
+    const fim = Math.floor(new Date("2026-05-30T23:59:59-03:00").getTime() / 1000);
+
+    let scrollId = "";
+    let totalNet = 0;
+    let totalGross = 0;
+    let totalSeller = 0;
+    let totalCapped = 0;
+    let totalActualAmount = 0;
+    let totalNodes = 0;
+    let paginas = 0;
+    const statusCounts = {};
+    const erros = [];
+
+    try {
+      while (paginas < 200) {
+        paginas++;
+        const safeScrollId = String(scrollId || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+        const query = `{
+          conversionReport(
+            purchaseTimeStart:${inicio}
+            purchaseTimeEnd:${fim}
+            scrollId:"${safeScrollId}"
+            limit:100
+          ) {
+            nodes {
+              conversionStatus
+              netCommission
+              grossCommission
+              cappedCommission
+              sellerCommission
+              orders {
+                items {
+                  actualAmount
+                }
+              }
+            }
+            pageInfo {
+              scrollId
+              hasNextPage
+            }
+          }
+        }`;
+
+        const timestamp = Math.floor(Date.now() / 1000);
+        const payload = JSON.stringify({ query });
+        const baseString = `${appId}${timestamp}${payload}${shopeeSecret}`;
+        const signature = crypto.createHash("sha256").update(baseString).digest("hex");
+
+        const response = await fetch("https://open-api.affiliate.shopee.com.br/graphql", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `SHA256 Credential=${appId}, Timestamp=${timestamp}, Signature=${signature}`,
+          },
+          body: payload,
+        });
+
+        const data = await response.json().catch(() => ({}));
+        if (data.errors) {
+          erros.push({ pagina: paginas, erros: data.errors });
+          break;
+        }
+
+        const nodes = data?.data?.conversionReport?.nodes || [];
+        const pageInfo = data?.data?.conversionReport?.pageInfo || {};
+
+        nodes.forEach((n) => {
+          const status = String(n.conversionStatus || "unknown").toUpperCase();
+          statusCounts[status] = (statusCounts[status] || 0) + 1;
+          totalNet += Number(n.netCommission || 0);
+          totalGross += Number(n.grossCommission || 0);
+          totalSeller += Number(n.sellerCommission || 0);
+          totalCapped += Number(n.cappedCommission || 0);
+
+          (n.orders || []).forEach((o) => {
+            (o.items || []).forEach((i) => {
+              totalActualAmount += Number(i.actualAmount || 0);
+            });
+          });
+        });
+
+        totalNodes += nodes.length;
+
+        if (!pageInfo.hasNextPage || !pageInfo.scrollId) {
+          break;
+        }
+        scrollId = pageInfo.scrollId;
+
+        await new Promise((r) => setTimeout(r, 200));
+      }
+    } catch (err) {
+      erros.push({ erro: err?.message || String(err) });
+    }
+
+    const painelEsperado = 34200;
+
+    res.json({
+      success: true,
+      periodo: "01/05/2026 a 30/05/2026 (igual painel Shopee do cliente)",
+      paginas_processadas: paginas,
+      total_conversoes: totalNodes,
+      statusEncontrados: statusCounts,
+      totais: {
+        netCommission: totalNet.toFixed(2),
+        grossCommission: totalGross.toFixed(2),
+        sellerCommission: totalSeller.toFixed(2),
+        cappedCommission: totalCapped.toFixed(2),
+        actualAmount: totalActualAmount.toFixed(2),
+      },
+      comparacao_painel: {
+        painel_shopee_mostra: `R$ ${painelEsperado.toLocaleString("pt-BR")}`,
+        nosso_netCommission: `R$ ${totalNet.toFixed(2)}`,
+        diferenca_R$: (painelEsperado - totalNet).toFixed(2),
+        diferenca_pct: totalNet > 0 ? `${((1 - totalNet / painelEsperado) * 100).toFixed(1)}%` : "N/A",
+      },
+      erros,
+    });
+  },
+);
+
+function gerarConclusao(r) {
+  const conclusoes = [];
+
+  const sf = r.sem_filtro;
+  if (!sf || sf.erros) {
+    conclusoes.push("❌ Sem filtro deu erro");
+    if (sf?.erros) conclusoes.push(`Detalhe: ${sf.erros[0]?.message}`);
+    return conclusoes;
+  }
+
+  conclusoes.push(`📊 60d sem filtro: ${sf.retornouNodes} conversões`);
+  conclusoes.push(`   netCommission: R$ ${sf.totais_conversion.netCommission}`);
+  conclusoes.push(`   itemTotalCommission: R$ ${sf.totais_item.itemTotalCommission}`);
+
+  if (sf.temNextPage) {
+    conclusoes.push("⚠️ Tem mais páginas — soma incompleta. Limite 100 pedidos.");
+  }
+
+  ["pending", "unpaid", "completed", "cancelled"].forEach((s) => {
+    const d = r[s];
+    if (!d || d.erros) return;
+    if (d.retornouNodes > 0) {
+      conclusoes.push(`📋 ${s.toUpperCase()}: ${d.retornouNodes} pedidos · netCommission R$ ${d.totais_conversion.netCommission}`);
+    } else {
+      conclusoes.push(`📋 ${s.toUpperCase()}: 0`);
+    }
+  });
+
+  return conclusoes;
+}
