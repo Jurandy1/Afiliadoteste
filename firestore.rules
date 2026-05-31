@@ -125,6 +125,14 @@ service cloud.firestore {
       allow delete: if true;
     }
 
+    match /backup_grupos/{grupoId} {
+      allow read: if true;
+      allow create: if request.resource.data.keys().hasAny(['nome', 'principalItemId'])
+                    && request.resource.data.nome is string;
+      allow update: if true;
+      allow delete: if true;
+    }
+
     // ── Bloquear tudo que não foi explicitamente permitido ──────
     match /{document=**} {
       allow read, write: if false;

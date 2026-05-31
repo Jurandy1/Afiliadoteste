@@ -1,4 +1,340 @@
-import { useEffect, useState } from "react";
+# 🎯 PATCH BACKUP — PARTE 3/3: GRUPOS DE BACKUP
+
+**Objetivo:** Adicionar feature de **grupos** ao menu Backup. Cliente cadastra um produto PRINCIPAL e adiciona vários BACKUPS manualmente. Sistema compara, recomenda melhor opção, registra trocas com motivo, mantém histórico.
+
+**Tempo estimado:** 45-60 minutos (aplicar + deploy + testar)
+
+**Risco:** 🟡 Médio (adiciona arquivos novos + modifica BackupPage.jsx existente)
+
+---
+
+## ⚠️⚠️⚠️ REGRAS DE OURO
+
+### ❌ PROIBIDO
+1. ❌ **NÃO MEXER** em arquivos fora dos listados nesse patch
+2. ❌ **NÃO MEXER** no `routes.js`, `Sidebar.jsx`, `App.jsx`
+3. ❌ **NÃO MEXER** nas Cloud Functions existentes
+4. ❌ **NÃO MEXER** em outras coleções Firestore
+5. ❌ **NÃO INVENTAR** features além do escrito (sem busca por nome, sem migração de dados, sem cron extra)
+6. ❌ **NÃO REMOVER** funcionalidade existente do `BackupPage.jsx`
+
+### ✅ OBRIGATÓRIO
+1. ✅ Aplicar mudanças NA ORDEM (1 → 6)
+2. ✅ Mostrar diff antes de salvar
+3. ✅ Cada arquivo modificado deve ser editado UMA VEZ só (não voltar pra "ajustar")
+
+---
+
+## 📋 ORDEM DE APLICAÇÃO
+
+| # | Arquivo | Ação | Risco |
+|---|---------|------|-------|
+| 1 | `firestore.rules` | Adicionar regra `/backup_grupos` | 🟢 Mínimo |
+| 2 | `backupRepository.js` | Adicionar 6 funções de grupos | 🟢 Mínimo |
+| 3 | `BackupPage.jsx` | Adicionar 4ª aba "Grupos" + componentes | 🟡 Médio |
+| 4 | Deploy rules + push | 🟡 Médio |
+
+---
+
+## MUDANÇA 1: Firestore Rules
+
+**Arquivo:** `firestore.rules`  
+**Risco:** 🟢 Mínimo
+
+### Localizar o bloco `match /backup_produtos`
+
+```javascript
+    // ── Backup de Produtos (cadastro manual via menu Backup) ────
+    match /backup_produtos/{produtoId} {
+      allow read: if true;
+      allow create: if request.resource.data.keys().hasAny(['itemId', 'shopId'])
+                    && request.resource.data.itemId is string;
+      allow update: if true;
+      allow delete: if true;
+    }
+```
+
+### Adicionar DEPOIS desse bloco (e antes do "Bloquear tudo"):
+
+```javascript
+    // ── Backup Grupos (agrupamento de principal + backups) ──────
+    match /backup_grupos/{grupoId} {
+      allow read: if true;
+      allow create: if request.resource.data.keys().hasAny(['nome', 'principalItemId'])
+                    && request.resource.data.nome is string;
+      allow update: if true;
+      allow delete: if true;
+    }
+```
+
+### ⚠️ Cuidados
+- NÃO mexer em outras regras
+- Adicionar ANTES do `match /{document=**}` final
+- Deploy: `firebase deploy --only firestore:rules`
+
+---
+
+## MUDANÇA 2: `backupRepository.js`
+
+**Arquivo:** `src/services/repositories/backupRepository.js`  
+**Risco:** 🟢 Mínimo (adições)
+
+### Adicionar imports no topo do arquivo (junto com os existentes)
+
+Localizar:
+```javascript
+import { collection, deleteDoc, doc, getDoc, getDocs, setDoc } from "firebase/firestore";
+```
+
+**Substituir por:**
+```javascript
+import { addDoc, arrayRemove, arrayUnion, collection, deleteDoc, doc, getDoc, getDocs, query, setDoc, updateDoc, where } from "firebase/firestore";
+```
+
+### Adicionar 6 funções novas no FIM do arquivo
+
+```javascript
+// ═══════════════════════════════════════════════════════════════
+// 🎯 GRUPOS DE BACKUP
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Cria um novo grupo de backup com um produto principal.
+ * O produto principal já deve estar cadastrado em /backup_produtos.
+ */
+export async function criarGrupo(nome, principalItemId) {
+  if (!nome || !nome.trim()) throw new Error("Nome do grupo é obrigatório");
+  if (!principalItemId) throw new Error("Selecione um produto principal");
+
+  const grupoData = {
+    nome: nome.trim(),
+    principalItemId: String(principalItemId),
+    backupItemIds: [],
+    historico: [],
+    criado_em: new Date(),
+    atualizado_em: new Date(),
+  };
+
+  const ref = await addDoc(collection(db, "backup_grupos"), grupoData);
+  
+  // Marca o produto principal com grupoId
+  const produtoRef = doc(db, "backup_produtos", `item_${principalItemId}`);
+  await setDoc(produtoRef, { grupoId: ref.id }, { merge: true });
+  
+  return { docId: ref.id, ...grupoData };
+}
+
+/**
+ * Lista todos os grupos cadastrados.
+ */
+export async function listarGrupos() {
+  const snap = await getDocs(collection(db, "backup_grupos"));
+  const grupos = [];
+  snap.forEach((d) => {
+    const data = d.data() || {};
+    grupos.push({
+      docId: d.id,
+      ...data,
+      criado_em: data.criado_em?.toDate?.() || null,
+      atualizado_em: data.atualizado_em?.toDate?.() || null,
+    });
+  });
+  // Ordena por mais recente primeiro
+  grupos.sort((a, b) => (b.atualizado_em?.getTime() || 0) - (a.atualizado_em?.getTime() || 0));
+  return grupos;
+}
+
+/**
+ * Adiciona um produto como backup de um grupo.
+ * Verifica se o produto já está em outro grupo.
+ */
+export async function adicionarBackupAoGrupo(grupoId, itemId) {
+  if (!grupoId || !itemId) throw new Error("grupoId e itemId obrigatórios");
+
+  // Verifica se o produto já está em outro grupo
+  const produtoRef = doc(db, "backup_produtos", `item_${itemId}`);
+  const produtoSnap = await getDoc(produtoRef);
+  
+  if (!produtoSnap.exists()) {
+    throw new Error("Produto não está cadastrado em backups. Cadastre primeiro.");
+  }
+  
+  const produtoData = produtoSnap.data();
+  if (produtoData.grupoId && produtoData.grupoId !== grupoId) {
+    throw new Error(`Produto já está no grupo ${produtoData.grupoId}. Remova de lá primeiro.`);
+  }
+
+  // Adiciona ao array backupItemIds do grupo
+  const grupoRef = doc(db, "backup_grupos", grupoId);
+  await updateDoc(grupoRef, {
+    backupItemIds: arrayUnion(String(itemId)),
+    atualizado_em: new Date(),
+  });
+
+  // Marca o produto com grupoId
+  await setDoc(produtoRef, { grupoId }, { merge: true });
+}
+
+/**
+ * Remove um produto de um grupo (não deleta o produto).
+ */
+export async function removerBackupDoGrupo(grupoId, itemId) {
+  if (!grupoId || !itemId) throw new Error("grupoId e itemId obrigatórios");
+
+  const grupoRef = doc(db, "backup_grupos", grupoId);
+  await updateDoc(grupoRef, {
+    backupItemIds: arrayRemove(String(itemId)),
+    atualizado_em: new Date(),
+  });
+
+  // Limpa o grupoId do produto
+  const produtoRef = doc(db, "backup_produtos", `item_${itemId}`);
+  await setDoc(produtoRef, { grupoId: null }, { merge: true });
+}
+
+/**
+ * Troca o produto principal de um grupo.
+ * Antigo principal vira backup. Novo backup vira principal.
+ * Registra no histórico.
+ */
+export async function trocarPrincipal(grupoId, novoPrincipalItemId, motivo) {
+  if (!grupoId || !novoPrincipalItemId) throw new Error("grupoId e novoPrincipalItemId obrigatórios");
+
+  const grupoRef = doc(db, "backup_grupos", grupoId);
+  const grupoSnap = await getDoc(grupoRef);
+  if (!grupoSnap.exists()) throw new Error("Grupo não encontrado");
+
+  const grupoData = grupoSnap.data();
+  const principalAntigo = grupoData.principalItemId;
+  const novoPrincipal = String(novoPrincipalItemId);
+
+  if (principalAntigo === novoPrincipal) {
+    throw new Error("Este produto já é o principal");
+  }
+
+  // Verifica se o novo principal está nos backups do grupo
+  const backupIds = grupoData.backupItemIds || [];
+  if (!backupIds.includes(novoPrincipal)) {
+    throw new Error("Produto selecionado não é backup deste grupo");
+  }
+
+  // Constrói o histórico
+  const entrada = {
+    data: new Date(),
+    motivo: String(motivo || "").trim() || "não especificado",
+    principalAntigo: String(principalAntigo),
+    principalNovo: novoPrincipal,
+  };
+
+  // Atualiza: antigo principal vira backup, novo principal sai dos backups
+  const novosBackups = backupIds.filter((id) => id !== novoPrincipal);
+  novosBackups.push(String(principalAntigo));
+
+  await updateDoc(grupoRef, {
+    principalItemId: novoPrincipal,
+    backupItemIds: novosBackups,
+    historico: arrayUnion(entrada),
+    atualizado_em: new Date(),
+  });
+}
+
+/**
+ * Remove um grupo inteiro (não deleta os produtos).
+ * Limpa o campo grupoId de todos os produtos vinculados.
+ */
+export async function removerGrupo(grupoId) {
+  if (!grupoId) throw new Error("grupoId obrigatório");
+
+  const grupoRef = doc(db, "backup_grupos", grupoId);
+  const grupoSnap = await getDoc(grupoRef);
+  if (!grupoSnap.exists()) throw new Error("Grupo não encontrado");
+
+  const grupoData = grupoSnap.data();
+  const todosIds = [grupoData.principalItemId, ...(grupoData.backupItemIds || [])];
+
+  // Limpa grupoId de todos os produtos vinculados
+  for (const itemId of todosIds) {
+    if (itemId) {
+      const produtoRef = doc(db, "backup_produtos", `item_${itemId}`);
+      try {
+        await setDoc(produtoRef, { grupoId: null }, { merge: true });
+      } catch {
+        // Ignora se produto não existir mais
+      }
+    }
+  }
+
+  // Remove o grupo
+  await deleteDoc(grupoRef);
+}
+
+/**
+ * Carrega um grupo com todos os dados dos produtos (principal + backups).
+ */
+export async function carregarGrupoComProdutos(grupoId) {
+  const grupoRef = doc(db, "backup_grupos", grupoId);
+  const grupoSnap = await getDoc(grupoRef);
+  if (!grupoSnap.exists()) throw new Error("Grupo não encontrado");
+
+  const grupoData = grupoSnap.data();
+  const todosIds = [grupoData.principalItemId, ...(grupoData.backupItemIds || [])];
+  
+  const produtos = {};
+  for (const itemId of todosIds) {
+    if (!itemId) continue;
+    try {
+      const pRef = doc(db, "backup_produtos", `item_${itemId}`);
+      const pSnap = await getDoc(pRef);
+      if (pSnap.exists()) {
+        produtos[itemId] = pSnap.data();
+      }
+    } catch (err) {
+      console.warn(`Erro carregando produto ${itemId}:`, err);
+    }
+  }
+
+  return {
+    docId: grupoSnap.id,
+    nome: grupoData.nome,
+    principalItemId: grupoData.principalItemId,
+    backupItemIds: grupoData.backupItemIds || [],
+    historico: grupoData.historico || [],
+    criado_em: grupoData.criado_em?.toDate?.() || null,
+    atualizado_em: grupoData.atualizado_em?.toDate?.() || null,
+    produtos, // { itemId: { ...dadosDoProduto } }
+  };
+}
+```
+
+### ⚠️ Cuidados
+- NÃO modificar funções existentes
+- Adicionar APENAS as 6 funções novas no fim
+- Imports já foram atualizados acima
+
+---
+
+## MUDANÇA 3: `BackupPage.jsx`
+
+**Arquivo:** `src/pages/BackupPage.jsx`  
+**Risco:** 🟡 Médio (adiciona aba nova + componentes)
+
+### 3.1) Adicionar imports
+
+Localizar no topo:
+```javascript
+import {
+  lookupProdutoShopee,
+  salvarBackup,
+  listarBackups,
+  atualizarBackup,
+  removerBackup,
+  editarBackupMeta,
+  buscarSimilaresDaLoja,
+} from "../services/repositories/backupRepository";
+```
+
+**Substituir por:**
+```javascript
 import {
   lookupProdutoShopee,
   salvarBackup,
@@ -15,578 +351,30 @@ import {
   removerGrupo,
   carregarGrupoComProdutos,
 } from "../services/repositories/backupRepository";
-import { fmt, fmtNum } from "../utils/formatters";
+```
 
-function formatTempoAtras(date) {
-  if (!date) return "—";
-  const passado = Date.now() - date.getTime();
-  const min = Math.floor(passado / 60000);
-  if (min < 1) return "agora mesmo";
-  if (min < 60) return `há ${min} min`;
-  const h = Math.floor(min / 60);
-  if (h < 24) return `há ${h}h`;
-  const d = Math.floor(h / 24);
-  return `há ${d}d`;
-}
+### 3.2) Adicionar o novo componente `AbaGrupos`
 
-function formatPeriodoComissao(periodoFim) {
-  if (!periodoFim) return null;
-  const agora = Math.floor(Date.now() / 1000);
-  const diff = periodoFim - agora;
-  if (diff < 0) return { texto: "ENCERRADO", critico: true };
-  const dias = Math.floor(diff / 86400);
-  if (dias < 7) return { texto: `Termina em ${dias} dia(s)`, critico: true };
-  if (dias < 30) return { texto: `Termina em ${dias} dias`, critico: false };
-  return { texto: `Válido por ${dias} dias`, critico: false };
-}
+**Antes** do componente principal `export default function BackupPage()`, adicionar este componente:
 
-function vereditoAutomatico(produto, historico) {
-  if (produto.comissao_pct === 0) {
-    return {
-      nivel: "ruim",
-      icone: "🔴",
-      texto: "Não compensa — comissão 0%",
-      detalhes: "Produto saiu do programa de afiliados. Procure alternativa.",
-    };
-  }
-
-  const comissaoR$ = (produto.preco * produto.comissao_pct) / 100;
-
-  if (comissaoR$ < 1) {
-    return {
-      nivel: "ruim",
-      icone: "🔴",
-      texto: `Comissão muito baixa — apenas R$ ${comissaoR$.toFixed(2)} por venda`,
-      detalhes: "Não compensa investir tráfego pago. CPC médio Meta é R$ 0,10-0,30 e taxa de conversão típica é 1-3%.",
-    };
-  }
-
-  if (historico?.ja_vendeu && historico.comissao_total_minha > 50) {
-    return {
-      nivel: "bom",
-      icone: "✅",
-      texto: `Histórico positivo — você já ganhou ${fmt(historico.comissao_total_minha)}`,
-      detalhes: `Vendeu ${historico.vendas_minhas} vezes esse produto. Continua promovendo.`,
-    };
-  }
-
-  if (historico?.ja_vendeu && historico.comissao_pct_quando_vendi > 0
-      && produto.comissao_pct > historico.comissao_pct_quando_vendi * 1.5) {
-    return {
-      nivel: "bom",
-      icone: "✅",
-      texto: "Oportunidade — comissão subiu",
-      detalhes: `Comissão subiu de ${historico.comissao_pct_quando_vendi}% para ${produto.comissao_pct}% desde que você vendeu.`,
-    };
-  }
-
-  if (comissaoR$ >= 3) {
-    return {
-      nivel: "bom",
-      icone: "✅",
-      texto: `Comissão decente — R$ ${comissaoR$.toFixed(2)} por venda`,
-      detalhes: "Vale testar com pequeno orçamento.",
-    };
-  }
-
-  return {
-    nivel: "atencao",
-    icone: "⚠️",
-    texto: `Comissão moderada — R$ ${comissaoR$.toFixed(2)} por venda`,
-    detalhes: "Avaliar concorrência e CPC do nicho antes de promover.",
-  };
-}
-
-function ProdutoCard({ produto, historico, onSalvar, jaSalvoComoBackup }) {
-  const [apelido, setApelido] = useState("");
-  const [salvando, setSalvando] = useState(false);
-  const [erro, setErro] = useState(null);
-
-  const veredito = vereditoAutomatico(produto, historico);
-  const periodoInfo = formatPeriodoComissao(produto.periodoFim);
-  const comissaoR$ = (produto.preco * produto.comissao_pct) / 100;
-
-  const handleSalvar = async () => {
-    setSalvando(true);
-    setErro(null);
-    try {
-      await onSalvar(produto, { apelido });
-    } catch (err) {
-      setErro(err?.message || String(err));
-    } finally {
-      setSalvando(false);
-    }
-  };
-
-  const vereditoStyle = {
-    bom: "bg-green-50 border-green-200 text-green-800",
-    atencao: "bg-orange-50 border-orange-200 text-orange-800",
-    ruim: "bg-red-50 border-red-200 text-red-800",
-  };
-
-  return (
-    <div className="bg-white border border-gray-200 rounded-lg p-4">
-      <div className="flex gap-4">
-        {produto.imagem && (
-          <img
-            src={produto.imagem}
-            alt={produto.nome}
-            className="w-24 h-24 object-cover rounded border border-gray-200 flex-shrink-0"
-          />
-        )}
-
-        <div className="flex-1 min-w-0">
-          <div className="font-semibold text-sm text-gray-800 truncate">{produto.nome}</div>
-          <div className="text-xs text-gray-500 mt-0.5">🏪 {produto.loja}</div>
-          <div className="text-xs text-gray-500">⭐ {produto.rating} · 🛒 {produto.vendas_shopee} vendas Shopee</div>
-
-          <div className="mt-2 flex gap-4 text-sm">
-            <div>
-              <div className="text-xs text-gray-500">Preço</div>
-              <div className="font-bold text-gray-900">{fmt(produto.preco)}</div>
-            </div>
-            <div>
-              <div className="text-xs text-gray-500">Comissão</div>
-              <div className="font-bold text-blue-700">
-                {produto.comissao_pct}% ({fmt(comissaoR$)})
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {periodoInfo && (
-        <div className={`mt-3 p-2 rounded text-xs ${periodoInfo.critico ? "bg-red-50 text-red-700" : "bg-gray-50 text-gray-600"}`}>
-          ⏳ {periodoInfo.texto}
-        </div>
-      )}
-
-      {historico?.ja_vendeu && (
-        <div className="mt-3 p-3 bg-blue-50 border border-blue-200 rounded text-xs">
-          <div className="font-semibold text-blue-900 mb-1">📊 Sua performance histórica:</div>
-          <div className="grid grid-cols-3 gap-2 text-blue-800">
-            <div>• Vendas: <strong>{historico.vendas_minhas}</strong></div>
-            <div>• Comissão: <strong>{fmt(historico.comissao_total_minha)}</strong></div>
-            <div>• GMV: <strong>{fmt(historico.gmv_total_meu)}</strong></div>
-          </div>
-          {historico.preco_quando_vendi > 0 && historico.preco_quando_vendi !== produto.preco && (
-            <div className="text-blue-700 mt-1">
-              Preço quando vendeu: {fmt(historico.preco_quando_vendi)} → agora {fmt(produto.preco)}
-            </div>
-          )}
-        </div>
-      )}
-      {historico && !historico.ja_vendeu && (
-        <div className="mt-3 p-2 bg-gray-50 border border-gray-200 rounded text-xs text-gray-600">
-          ℹ️ Você nunca vendeu esse produto antes.
-        </div>
-      )}
-
-      <div className={`mt-3 p-3 border rounded ${vereditoStyle[veredito.nivel]}`}>
-        <div className="font-semibold text-sm">{veredito.icone} {veredito.texto}</div>
-        <div className="text-xs mt-1">{veredito.detalhes}</div>
-      </div>
-
-      {!jaSalvoComoBackup ? (
-        <div className="mt-3 flex gap-2 items-center">
-          <input
-            type="text"
-            placeholder="Apelido (opcional)"
-            value={apelido}
-            onChange={(e) => setApelido(e.target.value)}
-            className="flex-1 text-sm px-2 py-1.5 border border-gray-300 rounded"
-            disabled={salvando}
-          />
-          <button
-            type="button"
-            onClick={handleSalvar}
-            disabled={salvando}
-            className="px-3 py-1.5 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 disabled:bg-gray-300"
-          >
-            {salvando ? "Salvando..." : "💾 Salvar"}
-          </button>
-        </div>
-      ) : (
-        <div className="mt-3 p-2 bg-green-50 border border-green-200 rounded text-sm text-green-700">
-          ✅ Já está nos seus backups.
-        </div>
-      )}
-
-      {erro && (
-        <div className="mt-2 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-700">
-          ❌ {erro}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function AbaCadastrar({ onCadastrado }) {
-  const [url, setUrl] = useState("");
-  const [resultado, setResultado] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [erro, setErro] = useState(null);
-
-  const handleBuscar = async () => {
-    if (!url.trim()) {
-      setErro("Cole um link Shopee");
-      return;
-    }
-    setLoading(true);
-    setErro(null);
-    setResultado(null);
-    try {
-      const res = await lookupProdutoShopee(url.trim());
-      if (!res.success) {
-        setErro(res.error || "Erro desconhecido");
-      } else {
-        setResultado(res);
-      }
-    } catch (err) {
-      setErro(err?.message || String(err));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleSalvar = async (produto, opcoes) => {
-    await salvarBackup(produto, opcoes);
-    if (resultado) {
-      setResultado({ ...resultado, jaSalvoComoBackup: true });
-    }
-    if (onCadastrado) onCadastrado();
-  };
-
-  return (
-    <div className="space-y-4">
-      <div className="bg-white border border-gray-200 rounded-lg p-4">
-        <label className="block text-sm font-medium text-gray-700 mb-2">
-          🔍 Cole o link Shopee:
-        </label>
-        <div className="flex gap-2">
-          <input
-            type="text"
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            placeholder="https://shopee.com.br/product/420243547/10011438006"
-            className="flex-1 px-3 py-2 border border-gray-300 rounded text-sm"
-            disabled={loading}
-            onKeyDown={(e) => e.key === "Enter" && handleBuscar()}
-          />
-          <button
-            type="button"
-            onClick={handleBuscar}
-            disabled={loading}
-            className="px-4 py-2 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 disabled:bg-gray-300"
-          >
-            {loading ? "Buscando..." : "Buscar"}
-          </button>
-        </div>
-        <p className="text-xs text-gray-500 mt-2">
-          ⚠️ Não suporta links curtos (s.shopee.com.br). Cole o link completo da página do produto.
-        </p>
-      </div>
-
-      {erro && (
-        <div className="p-3 bg-red-50 border border-red-200 rounded text-sm text-red-700">
-          ❌ {erro}
-        </div>
-      )}
-
-      {resultado && (
-        <ProdutoCard
-          produto={resultado.produto}
-          historico={resultado.historico}
-          onSalvar={handleSalvar}
-          jaSalvoComoBackup={resultado.jaSalvoComoBackup}
-        />
-      )}
-    </div>
-  );
-}
-
-function AbaListagem({ refreshTrigger }) {
-  const [backups, setBackups] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [atualizando, setAtualizando] = useState(null);
-  const [filtro, setFiltro] = useState("todos");
-
-  const carregar = async () => {
-    setLoading(true);
-    try {
-      const lista = await listarBackups();
-      setBackups(lista);
-    } catch (err) {
-      console.error("Erro carregando backups:", err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    carregar();
-  }, [refreshTrigger]);
-
-  const handleAtualizar = async (itemId) => {
-    setAtualizando(itemId);
-    try {
-      await atualizarBackup(itemId);
-      await carregar();
-    } catch (err) {
-      alert(`Erro: ${err?.message || String(err)}`);
-    } finally {
-      setAtualizando(null);
-    }
-  };
-
-  const handleRemover = async (itemId, nome) => {
-    if (!confirm(`Remover "${nome}" dos backups?`)) return;
-    try {
-      await removerBackup(itemId);
-      await carregar();
-    } catch (err) {
-      alert(`Erro: ${err?.message || String(err)}`);
-    }
-  };
-
-  const filtrados = backups.filter((b) => {
-    if (filtro === "alertas") return (b.alertas?.length || 0) > 0;
-    if (filtro === "principais") return b.marcadoPrincipal;
-    return true;
-  });
-
-  if (loading) {
-    return <div className="text-center py-8 text-gray-500">Carregando...</div>;
-  }
-
-  if (backups.length === 0) {
-    return (
-      <div className="text-center py-12 bg-gray-50 rounded border border-gray-200">
-        <div className="text-4xl mb-2">📦</div>
-        <div className="text-gray-700 font-medium">Nenhum produto cadastrado ainda</div>
-        <div className="text-sm text-gray-500 mt-1">Vá na aba "Cadastrar" para adicionar seu primeiro backup.</div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-4">
-      <div className="flex gap-2">
-        {[
-          { id: "todos", label: `Todos (${backups.length})` },
-          { id: "alertas", label: `⚠️ Com alertas (${backups.filter((b) => (b.alertas?.length || 0) > 0).length})` },
-          { id: "principais", label: `⭐ Principais (${backups.filter((b) => b.marcadoPrincipal).length})` },
-        ].map((opt) => (
-          <button
-            key={opt.id}
-            type="button"
-            onClick={() => setFiltro(opt.id)}
-            className={`px-3 py-1.5 rounded text-sm ${filtro === opt.id ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-700 hover:bg-gray-200"}`}
-          >
-            {opt.label}
-          </button>
-        ))}
-      </div>
-
-      <div className="space-y-3">
-        {filtrados.map((b) => {
-          const periodoInfo = formatPeriodoComissao(b.periodoFim);
-          const comissaoR$ = (Number(b.preco || 0) * Number(b.comissao_pct || 0)) / 100;
-
-          return (
-            <div key={b.docId} className="bg-white border border-gray-200 rounded-lg p-3">
-              <div className="flex gap-3">
-                {b.imagem && (
-                  <img
-                    src={b.imagem}
-                    alt={b.nome}
-                    className="w-16 h-16 object-cover rounded flex-shrink-0"
-                  />
-                )}
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="flex-1 min-w-0">
-                      {b.marcadoPrincipal && <span className="text-yellow-500 mr-1">⭐</span>}
-                      <span className="font-medium text-sm text-gray-800 truncate">
-                        {b.apelido || b.nome}
-                      </span>
-                    </div>
-                  </div>
-                  <div className="text-xs text-gray-500">🏪 {b.loja}</div>
-                  <div className="flex gap-4 text-xs mt-1">
-                    <span>💵 {fmt(b.preco)}</span>
-                    <span>💰 {b.comissao_pct}% ({fmt(comissaoR$)})</span>
-                    <span>🛒 {b.vendas_shopee} vendas Shopee</span>
-                  </div>
-                  <div className="text-xs text-gray-400 mt-1">
-                    Atualizado {formatTempoAtras(b.ultima_verificacao)}
-                    {periodoInfo && <span className={periodoInfo.critico ? "text-red-600 ml-2" : "text-gray-400 ml-2"}>· {periodoInfo.texto}</span>}
-                  </div>
-                </div>
-              </div>
-
-              {b.alertas && b.alertas.length > 0 && (
-                <div className="mt-2 space-y-1">
-                  {b.alertas.map((a, i) => (
-                    <div
-                      key={i}
-                      className={`text-xs p-2 rounded ${a.nivel === "critico" ? "bg-red-50 text-red-700" : a.nivel === "aviso" ? "bg-orange-50 text-orange-700" : "bg-green-50 text-green-700"}`}
-                    >
-                      {a.nivel === "critico" ? "🔴" : a.nivel === "aviso" ? "🟠" : "🟢"} {a.mensagem}
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              <div className="mt-3 flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={() => handleAtualizar(b.itemId)}
-                  disabled={atualizando === b.itemId}
-                  className="px-2.5 py-1 text-xs bg-blue-50 text-blue-700 hover:bg-blue-100 rounded disabled:opacity-50"
-                >
-                  {atualizando === b.itemId ? "..." : "🔄 Atualizar"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    navigator.clipboard.writeText(b.linkAfiliado || b.linkProduto || "");
-                    alert("Link copiado!");
-                  }}
-                  className="px-2.5 py-1 text-xs bg-gray-100 text-gray-700 hover:bg-gray-200 rounded"
-                >
-                  📋 Copiar link
-                </button>
-                <button
-                  type="button"
-                  onClick={async () => {
-                    await editarBackupMeta(b.itemId, { marcadoPrincipal: !b.marcadoPrincipal });
-                    await carregar();
-                  }}
-                  className="px-2.5 py-1 text-xs bg-yellow-50 text-yellow-700 hover:bg-yellow-100 rounded"
-                >
-                  {b.marcadoPrincipal ? "⭐ Desmarcar" : "☆ Marcar"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleRemover(b.itemId, b.apelido || b.nome)}
-                  className="px-2.5 py-1 text-xs bg-red-50 text-red-700 hover:bg-red-100 rounded"
-                >
-                  🗑️ Remover
-                </button>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function AbaSimilar({ backups }) {
-  const [produtoSelecionado, setProdutoSelecionado] = useState(null);
-  const [similares, setSimilares] = useState([]);
-  const [loading, setLoading] = useState(false);
-
-  const handleBuscar = async (b) => {
-    setProdutoSelecionado(b);
-    setLoading(true);
-    try {
-      const lista = await buscarSimilaresDaLoja(b.loja, b.itemId);
-      setSimilares(lista);
-    } catch (err) {
-      console.error("Erro buscando similares:", err);
-      setSimilares([]);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  if (backups.length === 0) {
-    return (
-      <div className="text-center py-12 bg-gray-50 rounded border border-gray-200">
-        <div className="text-4xl mb-2">🔍</div>
-        <div className="text-gray-700 font-medium">Cadastre produtos primeiro</div>
-        <div className="text-sm text-gray-500 mt-1">Você precisa ter backups cadastrados pra buscar similares.</div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-4">
-      <div className="bg-white border border-gray-200 rounded-lg p-4">
-        <label className="block text-sm font-medium text-gray-700 mb-2">
-          Escolha um produto principal:
-        </label>
-        <select
-          onChange={(e) => {
-            const b = backups.find((x) => x.itemId === e.target.value);
-            if (b) handleBuscar(b);
-          }}
-          value={produtoSelecionado?.itemId || ""}
-          className="w-full px-3 py-2 border border-gray-300 rounded text-sm"
-        >
-          <option value="">— Selecione —</option>
-          {backups.map((b) => (
-            <option key={b.docId} value={b.itemId}>
-              {b.apelido || b.nome} ({b.loja})
-            </option>
-          ))}
-        </select>
-      </div>
-
-      {loading && <div className="text-center py-6 text-gray-500">Buscando similares...</div>}
-
-      {produtoSelecionado && !loading && similares.length === 0 && (
-        <div className="text-center py-6 bg-gray-50 rounded text-gray-600">
-          Nenhum produto similar da loja "{produtoSelecionado.loja}" encontrado no seu histórico de vendas.
-        </div>
-      )}
-
-      {!loading && similares.length > 0 && (
-        <div className="space-y-2">
-          <div className="text-sm text-gray-600 mb-2">
-            🔍 {similares.length} produtos da loja <strong>{produtoSelecionado.loja}</strong> que você já vendeu:
-          </div>
-          {similares.map((s) => (
-            <div key={s.docId} className="bg-white border border-gray-200 rounded p-3 flex justify-between items-center">
-              <div className="flex-1 min-w-0">
-                <div className="text-sm font-medium text-gray-800 truncate">{s.nome}</div>
-                <div className="text-xs text-gray-500 mt-0.5">
-                  💵 {fmt(s.preco)} · 💰 Comissão recebida: {fmt(s.comissao_total)} · 🛒 {s.vendas} vendas
-                </div>
-              </div>
-              <a
-                href={s.link}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="ml-3 px-3 py-1.5 text-xs bg-blue-50 text-blue-700 hover:bg-blue-100 rounded flex-shrink-0"
-              >
-                Ver →
-              </a>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
+```javascript
+// ─── Aba 4: Grupos ──────────────────────────────────────────
 function AbaGrupos({ refreshTrigger, onChange }) {
   const [grupos, setGrupos] = useState([]);
   const [loading, setLoading] = useState(true);
   const [grupoExpandido, setGrupoExpandido] = useState(null);
   const [criandoGrupo, setCriandoGrupo] = useState(false);
-  const [modalAdicionar, setModalAdicionar] = useState(null);
-  const [modalTrocar, setModalTrocar] = useState(null);
-  const [criterio, setCriterio] = useState("comissao");
+  const [modalAdicionar, setModalAdicionar] = useState(null); // grupoId quando aberto
+  const [modalTrocar, setModalTrocar] = useState(null); // {grupoId, principalAtual} quando aberto
+  const [criterio, setCriterio] = useState("comissao"); // comissao | rating | vendas
 
   const carregar = async () => {
     setLoading(true);
     try {
       const lista = await listarGrupos();
+      // Carrega dados completos de cada grupo (incluindo produtos)
       const completos = await Promise.all(
-        lista.map((g) => carregarGrupoComProdutos(g.docId)),
+        lista.map((g) => carregarGrupoComProdutos(g.docId))
       );
       setGrupos(completos);
     } catch (err) {
@@ -693,6 +481,7 @@ function AbaGrupos({ refreshTrigger, onChange }) {
   );
 }
 
+// ─── Modal: Criar grupo ─────────────────────────────────────
 function ModalCriarGrupo({ onClose, onCriado }) {
   const [nome, setNome] = useState("");
   const [backupsDisponiveis, setBackupsDisponiveis] = useState([]);
@@ -702,6 +491,7 @@ function ModalCriarGrupo({ onClose, onCriado }) {
 
   useEffect(() => {
     listarBackups().then((lista) => {
+      // Filtra apenas produtos que ainda não estão em grupo
       const livres = lista.filter((b) => !b.grupoId);
       setBackupsDisponiveis(livres);
     });
@@ -794,8 +584,9 @@ function ModalCriarGrupo({ onClose, onCriado }) {
   );
 }
 
+// ─── Modal: Adicionar backup a grupo ─────────────────────────
 function ModalAdicionarBackup({ grupoId, onClose, onAdicionado }) {
-  const [modo, setModo] = useState("link");
+  const [modo, setModo] = useState("link"); // 'link' | 'existente'
   const [url, setUrl] = useState("");
   const [produtoEncontrado, setProdutoEncontrado] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -805,6 +596,7 @@ function ModalAdicionarBackup({ grupoId, onClose, onAdicionado }) {
 
   useEffect(() => {
     listarBackups().then((lista) => {
+      // Mostra apenas produtos livres (sem grupo)
       const livres = lista.filter((b) => !b.grupoId);
       setBackupsDisponiveis(livres);
     });
@@ -820,7 +612,8 @@ function ModalAdicionarBackup({ grupoId, onClose, onAdicionado }) {
         setErro(res.error || "Erro desconhecido");
         return;
       }
-
+      
+      // Avisa se já está em outro grupo
       if (res.jaSalvoComoBackup) {
         const backups = await listarBackups();
         const existente = backups.find((b) => b.itemId === res.produto.itemId);
@@ -829,7 +622,7 @@ function ModalAdicionarBackup({ grupoId, onClose, onAdicionado }) {
           return;
         }
       }
-
+      
       setProdutoEncontrado(res);
     } catch (err) {
       setErro(err?.message || String(err));
@@ -843,9 +636,11 @@ function ModalAdicionarBackup({ grupoId, onClose, onAdicionado }) {
     setLoading(true);
     setErro(null);
     try {
+      // Salva produto se ainda não está
       if (!produtoEncontrado.jaSalvoComoBackup) {
         await salvarBackup(produtoEncontrado.produto, {});
       }
+      // Adiciona ao grupo
       await adicionarBackupAoGrupo(grupoId, produtoEncontrado.produto.itemId);
       onAdicionado();
     } catch (err) {
@@ -877,6 +672,7 @@ function ModalAdicionarBackup({ grupoId, onClose, onAdicionado }) {
           <button type="button" onClick={onClose} className="text-gray-400 hover:text-gray-600">✕</button>
         </div>
 
+        {/* Tabs */}
         <div className="flex gap-1 mb-3 border-b border-gray-200">
           <button
             type="button"
@@ -985,6 +781,7 @@ function ModalAdicionarBackup({ grupoId, onClose, onAdicionado }) {
   );
 }
 
+// ─── Modal: Trocar principal ────────────────────────────────
 function ModalTrocarPrincipal({ grupo, criterio, onClose, onTrocado }) {
   const [motivo, setMotivo] = useState("sem_estoque");
   const [motivoTexto, setMotivoTexto] = useState("");
@@ -994,6 +791,7 @@ function ModalTrocarPrincipal({ grupo, criterio, onClose, onTrocado }) {
 
   if (!grupo) return null;
 
+  // Lista backups ordenados por critério
   const backups = (grupo.backupItemIds || [])
     .map((id) => grupo.produtos[id])
     .filter(Boolean);
@@ -1034,6 +832,7 @@ function ModalTrocarPrincipal({ grupo, criterio, onClose, onTrocado }) {
         </div>
 
         <div className="space-y-3">
+          {/* Motivo */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Motivo:</label>
             <div className="space-y-1">
@@ -1067,6 +866,7 @@ function ModalTrocarPrincipal({ grupo, criterio, onClose, onTrocado }) {
             )}
           </div>
 
+          {/* Recomendação */}
           {recomendado && (
             <div className="p-3 bg-yellow-50 border border-yellow-200 rounded text-sm">
               🤖 <strong>Recomendado:</strong> {recomendado.apelido || recomendado.nome} ({recomendado.loja})
@@ -1076,6 +876,7 @@ function ModalTrocarPrincipal({ grupo, criterio, onClose, onTrocado }) {
             </div>
           )}
 
+          {/* Lista de backups */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Escolha o novo principal:</label>
             <div className="space-y-2 max-h-64 overflow-y-auto">
@@ -1138,6 +939,7 @@ function ModalTrocarPrincipal({ grupo, criterio, onClose, onTrocado }) {
   );
 }
 
+// ─── Card de Grupo ──────────────────────────────────────────
 function CardGrupo({ grupo, expandido, criterio, onCriterioChange, onToggleExpand, onAdicionarBackup, onTrocarPrincipal, onRemoverBackup, onRemoverGrupo }) {
   const principal = grupo.produtos[grupo.principalItemId];
   const backups = (grupo.backupItemIds || [])
@@ -1157,6 +959,7 @@ function CardGrupo({ grupo, expandido, criterio, onCriterioChange, onToggleExpan
 
   return (
     <div className="bg-white border border-gray-200 rounded-lg p-4">
+      {/* Header */}
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2 cursor-pointer flex-1 min-w-0" onClick={onToggleExpand}>
           <span className="text-lg">🎯</span>
@@ -1179,6 +982,7 @@ function CardGrupo({ grupo, expandido, criterio, onCriterioChange, onToggleExpan
 
       {expandido && (
         <>
+          {/* Principal */}
           {principal && (
             <div className="p-3 bg-yellow-50 border border-yellow-200 rounded mb-3">
               <div className="flex items-start gap-3">
@@ -1203,6 +1007,7 @@ function CardGrupo({ grupo, expandido, criterio, onCriterioChange, onToggleExpan
             </div>
           )}
 
+          {/* Critério */}
           {backups.length > 0 && (
             <div className="flex items-center gap-2 mb-2 text-xs">
               <span className="text-gray-600">Ordenar backups por:</span>
@@ -1223,6 +1028,7 @@ function CardGrupo({ grupo, expandido, criterio, onCriterioChange, onToggleExpan
             </div>
           )}
 
+          {/* Backups */}
           <div className="space-y-2">
             {backupsOrdenados.length === 0 ? (
               <div className="text-center py-4 text-sm text-gray-500 bg-gray-50 rounded">
@@ -1265,6 +1071,7 @@ function CardGrupo({ grupo, expandido, criterio, onCriterioChange, onToggleExpan
             + Adicionar backup
           </button>
 
+          {/* Histórico */}
           {grupo.historico && grupo.historico.length > 0 && (
             <div className="mt-3 pt-3 border-t border-gray-200">
               <div className="text-xs font-medium text-gray-700 mb-1">📜 Histórico de trocas ({grupo.historico.length})</div>
@@ -1293,53 +1100,126 @@ function CardGrupo({ grupo, expandido, criterio, onCriterioChange, onToggleExpan
     </div>
   );
 }
+```
 
+### 3.3) Modificar o componente principal `BackupPage` pra adicionar a 4ª aba
+
+Localizar:
+```javascript
 export default function BackupPage() {
   const [aba, setAba] = useState("cadastrar");
-  const [refreshTrigger, setRefreshTrigger] = useState(0);
-  const [backupsParaAbaSimilar, setBackupsParaAbaSimilar] = useState([]);
+```
 
-  useEffect(() => {
-    if (aba === "similar" || aba === "listagem") {
-      listarBackups().then(setBackupsParaAbaSimilar).catch(console.error);
-    }
-  }, [aba, refreshTrigger]);
+E o trecho dos tabs:
+```javascript
+        {[
+          { id: "cadastrar", label: "➕ Cadastrar" },
+          { id: "listagem", label: "📋 Meus Backups" },
+          { id: "similar", label: "🔍 Buscar Similar" },
+        ].map((opt) => (
+```
 
-  const handleCadastrado = () => {
-    setRefreshTrigger((x) => x + 1);
-  };
-
-  return (
-    <div className="p-4 max-w-5xl mx-auto">
-      <div className="mb-4">
-        <h1 className="text-xl font-bold text-gray-800">📦 Backup de Produtos</h1>
-        <p className="text-sm text-gray-500 mt-1">
-          Cadastre produtos Shopee como reserva — sistema monitora preço, comissão e período automaticamente.
-        </p>
-      </div>
-
-      <div className="flex gap-1 mb-4 border-b border-gray-200">
+**Substituir o array dos tabs por:**
+```javascript
         {[
           { id: "cadastrar", label: "➕ Cadastrar" },
           { id: "listagem", label: "📋 Meus Backups" },
           { id: "grupos", label: "🎯 Grupos" },
           { id: "similar", label: "🔍 Buscar Similar" },
         ].map((opt) => (
-          <button
-            key={opt.id}
-            type="button"
-            onClick={() => setAba(opt.id)}
-            className={`px-4 py-2 text-sm font-medium border-b-2 ${aba === opt.id ? "border-blue-600 text-blue-600" : "border-transparent text-gray-600 hover:text-gray-800"}`}
-          >
-            {opt.label}
-          </button>
-        ))}
-      </div>
+```
 
+E no fim do componente, antes do `}` de fechar, localizar:
+```javascript
+      {aba === "cadastrar" && <AbaCadastrar onCadastrado={handleCadastrado} />}
+      {aba === "listagem" && <AbaListagem refreshTrigger={refreshTrigger} />}
+      {aba === "similar" && <AbaSimilar backups={backupsParaAbaSimilar} />}
+```
+
+**Substituir por:**
+```javascript
       {aba === "cadastrar" && <AbaCadastrar onCadastrado={handleCadastrado} />}
       {aba === "listagem" && <AbaListagem refreshTrigger={refreshTrigger} />}
       {aba === "grupos" && <AbaGrupos refreshTrigger={refreshTrigger} onChange={handleCadastrado} />}
       {aba === "similar" && <AbaSimilar backups={backupsParaAbaSimilar} />}
-    </div>
-  );
-}
+```
+
+---
+
+## 🚀 DEPLOY
+
+```cmd
+cd C:\Users\PC\Desktop\Afiliadoteste-main
+firebase deploy --only firestore:rules
+npm run build
+git add .
+git commit -m "feat: grupos de backup com troca de principal e histórico"
+git push
+```
+
+⏳ Aguarda Vercel (~3 min).
+
+---
+
+## 🧪 TESTE
+
+### 1. Cria primeiro um grupo
+1. Abre `afiliadoteste.vercel.app` → Backup
+2. Aba "Cadastrar": cadastra 2-3 produtos diferentes (cola links da Shopee de produtos diferentes)
+3. Aba "🎯 Grupos": clica "+ Criar grupo"
+4. Nome: "Teste Estilete"
+5. Escolhe o produto principal (o que já está cadastrado)
+6. Clica "Criar grupo"
+
+### 2. Adiciona backups ao grupo
+1. Expande o grupo (clica no nome)
+2. Clica "+ Adicionar backup"
+3. Aba "Colar Link" → cola URL de outro produto
+4. Ou aba "Produto já cadastrado" → seleciona um dos cadastrados
+
+### 3. Troca o principal
+1. Com pelo menos 1 backup, clica "❌ Pausar e Trocar Principal"
+2. Escolhe motivo (ex: Sem estoque)
+3. Escolhe novo principal entre os backups
+4. Confirma
+5. Vê o histórico no fim do card
+
+---
+
+## ✅ CHECKLIST
+
+- [ ] Regra `/backup_grupos` adicionada em `firestore.rules`
+- [ ] 6 funções novas em `backupRepository.js`
+- [ ] Imports atualizados em `BackupPage.jsx`
+- [ ] Componente `AbaGrupos` adicionado
+- [ ] 3 modais adicionados (Criar, Adicionar, Trocar)
+- [ ] Componente `CardGrupo` adicionado
+- [ ] 4ª aba "Grupos" no menu
+- [ ] `npm run build` passou
+- [ ] Deploy rules OK
+- [ ] Git push OK
+- [ ] Vercel deployou
+- [ ] Cria grupo funcionou
+- [ ] Adicionar backup funcionou
+- [ ] Trocar principal funcionou
+- [ ] Histórico aparece
+
+---
+
+## 🚨 RESTRIÇÕES PRA TRAE
+
+| Situação | Não faça | Faça |
+|---|---|---|
+| Quer adicionar busca por nome em `/produtos` | Implementar busca ❌ | Pulamos isso, cliente preferiu sem ✅ |
+| Quer fazer migração de produtos existentes | Script de migração ❌ | Cliente disse NÃO gastar cota ✅ |
+| Quer adicionar comparação visual lado a lado | Layout complexo ❌ | Manter lista vertical simples ✅ |
+| Quer cron automático pros grupos | Cloud Function nova ❌ | Não foi pedido ✅ |
+| Quer renomear "grupo" pra outra coisa | Mudar nomenclatura ❌ | Manter "grupo" ✅ |
+| Quer permitir múltiplos principais | Estrutura nova ❌ | Sempre 1 principal ✅ |
+| Quer notificações por email | Integração SMTP ❌ | Não foi pedido ✅ |
+
+---
+
+**Lembrete final:** ESSE patch adiciona uma feature complexa. Aplique COM CALMA. Mostre diff antes de salvar CADA arquivo. Se algo não fizer sentido, PARE e pergunte.
+
+Próximo passo: aplicar, deploy, testar com 1 grupo de teste.

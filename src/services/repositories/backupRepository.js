@@ -1,4 +1,4 @@
-import { collection, deleteDoc, doc, getDocs, setDoc } from "firebase/firestore";
+import { addDoc, arrayRemove, arrayUnion, collection, deleteDoc, doc, getDoc, getDocs, query, setDoc, updateDoc, where } from "firebase/firestore";
 import { db } from "../firebase/client";
 
 const LOOKUP_URL = import.meta.env.VITE_LOOKUP_URL;
@@ -143,4 +143,173 @@ export async function buscarSimilaresDaLoja(loja, excluirItemId = null) {
 
   similares.sort((a, b) => b.comissao_total - a.comissao_total);
   return similares.slice(0, 10);
+}
+
+export async function criarGrupo(nome, principalItemId) {
+  if (!nome || !nome.trim()) throw new Error("Nome do grupo é obrigatório");
+  if (!principalItemId) throw new Error("Selecione um produto principal");
+
+  const grupoData = {
+    nome: nome.trim(),
+    principalItemId: String(principalItemId),
+    backupItemIds: [],
+    historico: [],
+    criado_em: new Date(),
+    atualizado_em: new Date(),
+  };
+
+  const ref = await addDoc(collection(db, "backup_grupos"), grupoData);
+
+  const produtoRef = doc(db, "backup_produtos", `item_${principalItemId}`);
+  await setDoc(produtoRef, { grupoId: ref.id }, { merge: true });
+
+  return { docId: ref.id, ...grupoData };
+}
+
+export async function listarGrupos() {
+  const snap = await getDocs(collection(db, "backup_grupos"));
+  const grupos = [];
+  snap.forEach((d) => {
+    const data = d.data() || {};
+    grupos.push({
+      docId: d.id,
+      ...data,
+      criado_em: data.criado_em?.toDate?.() || null,
+      atualizado_em: data.atualizado_em?.toDate?.() || null,
+    });
+  });
+
+  grupos.sort((a, b) => (b.atualizado_em?.getTime() || 0) - (a.atualizado_em?.getTime() || 0));
+  return grupos;
+}
+
+export async function adicionarBackupAoGrupo(grupoId, itemId) {
+  if (!grupoId || !itemId) throw new Error("grupoId e itemId obrigatórios");
+
+  const produtoRef = doc(db, "backup_produtos", `item_${itemId}`);
+  const produtoSnap = await getDoc(produtoRef);
+  if (!produtoSnap.exists()) {
+    throw new Error("Produto não está cadastrado em backups. Cadastre primeiro.");
+  }
+
+  const produtoData = produtoSnap.data();
+  if (produtoData.grupoId && produtoData.grupoId !== grupoId) {
+    throw new Error(`Produto já está no grupo ${produtoData.grupoId}. Remova de lá primeiro.`);
+  }
+
+  const grupoRef = doc(db, "backup_grupos", grupoId);
+  await updateDoc(grupoRef, {
+    backupItemIds: arrayUnion(String(itemId)),
+    atualizado_em: new Date(),
+  });
+
+  await setDoc(produtoRef, { grupoId }, { merge: true });
+}
+
+export async function removerBackupDoGrupo(grupoId, itemId) {
+  if (!grupoId || !itemId) throw new Error("grupoId e itemId obrigatórios");
+
+  const grupoRef = doc(db, "backup_grupos", grupoId);
+  await updateDoc(grupoRef, {
+    backupItemIds: arrayRemove(String(itemId)),
+    atualizado_em: new Date(),
+  });
+
+  const produtoRef = doc(db, "backup_produtos", `item_${itemId}`);
+  await setDoc(produtoRef, { grupoId: null }, { merge: true });
+}
+
+export async function trocarPrincipal(grupoId, novoPrincipalItemId, motivo) {
+  if (!grupoId || !novoPrincipalItemId) throw new Error("grupoId e novoPrincipalItemId obrigatórios");
+
+  const grupoRef = doc(db, "backup_grupos", grupoId);
+  const grupoSnap = await getDoc(grupoRef);
+  if (!grupoSnap.exists()) throw new Error("Grupo não encontrado");
+
+  const grupoData = grupoSnap.data();
+  const principalAntigo = grupoData.principalItemId;
+  const novoPrincipal = String(novoPrincipalItemId);
+
+  if (principalAntigo === novoPrincipal) {
+    throw new Error("Este produto já é o principal");
+  }
+
+  const backupIds = grupoData.backupItemIds || [];
+  if (!backupIds.includes(novoPrincipal)) {
+    throw new Error("Produto selecionado não é backup deste grupo");
+  }
+
+  const entrada = {
+    data: new Date(),
+    motivo: String(motivo || "").trim() || "não especificado",
+    principalAntigo: String(principalAntigo),
+    principalNovo: novoPrincipal,
+  };
+
+  const novosBackups = backupIds.filter((id) => id !== novoPrincipal);
+  novosBackups.push(String(principalAntigo));
+
+  await updateDoc(grupoRef, {
+    principalItemId: novoPrincipal,
+    backupItemIds: novosBackups,
+    historico: arrayUnion(entrada),
+    atualizado_em: new Date(),
+  });
+}
+
+export async function removerGrupo(grupoId) {
+  if (!grupoId) throw new Error("grupoId obrigatório");
+
+  const grupoRef = doc(db, "backup_grupos", grupoId);
+  const grupoSnap = await getDoc(grupoRef);
+  if (!grupoSnap.exists()) throw new Error("Grupo não encontrado");
+
+  const grupoData = grupoSnap.data();
+  const todosIds = [grupoData.principalItemId, ...(grupoData.backupItemIds || [])];
+
+  for (const itemId of todosIds) {
+    if (itemId) {
+      const produtoRef = doc(db, "backup_produtos", `item_${itemId}`);
+      try {
+        await setDoc(produtoRef, { grupoId: null }, { merge: true });
+      } catch {
+      }
+    }
+  }
+
+  await deleteDoc(grupoRef);
+}
+
+export async function carregarGrupoComProdutos(grupoId) {
+  const grupoRef = doc(db, "backup_grupos", grupoId);
+  const grupoSnap = await getDoc(grupoRef);
+  if (!grupoSnap.exists()) throw new Error("Grupo não encontrado");
+
+  const grupoData = grupoSnap.data();
+  const todosIds = [grupoData.principalItemId, ...(grupoData.backupItemIds || [])];
+
+  const produtos = {};
+  for (const itemId of todosIds) {
+    if (!itemId) continue;
+    try {
+      const pRef = doc(db, "backup_produtos", `item_${itemId}`);
+      const pSnap = await getDoc(pRef);
+      if (pSnap.exists()) {
+        produtos[itemId] = pSnap.data();
+      }
+    } catch (err) {
+      console.warn(`Erro carregando produto ${itemId}:`, err);
+    }
+  }
+
+  return {
+    docId: grupoSnap.id,
+    nome: grupoData.nome,
+    principalItemId: grupoData.principalItemId,
+    backupItemIds: grupoData.backupItemIds || [],
+    historico: grupoData.historico || [],
+    criado_em: grupoData.criado_em?.toDate?.() || null,
+    atualizado_em: grupoData.atualizado_em?.toDate?.() || null,
+    produtos,
+  };
 }
