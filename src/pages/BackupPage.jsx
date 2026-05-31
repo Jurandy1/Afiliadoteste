@@ -1,5 +1,22 @@
 import { useEffect, useState } from "react";
 import {
+  AlertTriangle,
+  Archive,
+  BarChart3,
+  CheckCircle2,
+  Copy,
+  Info,
+  Lightbulb,
+  Plus,
+  RefreshCw,
+  Save,
+  Search,
+  Star,
+  Store,
+  Target,
+  Trash2,
+} from "lucide-react";
+import {
   lookupProdutoShopee,
   salvarBackup,
   listarBackups,
@@ -44,7 +61,6 @@ function vereditoAutomatico(produto, historico) {
   if (produto.comissao_pct === 0) {
     return {
       nivel: "ruim",
-      icone: "🔴",
       texto: "Não compensa — comissão 0%",
       detalhes: "Produto saiu do programa de afiliados. Procure alternativa.",
     };
@@ -55,7 +71,6 @@ function vereditoAutomatico(produto, historico) {
   if (comissaoR$ < 1) {
     return {
       nivel: "ruim",
-      icone: "🔴",
       texto: `Comissão muito baixa — apenas R$ ${comissaoR$.toFixed(2)} por venda`,
       detalhes: "Não compensa investir tráfego pago. CPC médio Meta é R$ 0,10-0,30 e taxa de conversão típica é 1-3%.",
     };
@@ -64,7 +79,6 @@ function vereditoAutomatico(produto, historico) {
   if (historico?.ja_vendeu && historico.comissao_total_minha > 50) {
     return {
       nivel: "bom",
-      icone: "✅",
       texto: `Histórico positivo — você já ganhou ${fmt(historico.comissao_total_minha)}`,
       detalhes: `Vendeu ${historico.vendas_minhas} vezes esse produto. Continua promovendo.`,
     };
@@ -74,7 +88,6 @@ function vereditoAutomatico(produto, historico) {
       && produto.comissao_pct > historico.comissao_pct_quando_vendi * 1.5) {
     return {
       nivel: "bom",
-      icone: "✅",
       texto: "Oportunidade — comissão subiu",
       detalhes: `Comissão subiu de ${historico.comissao_pct_quando_vendi}% para ${produto.comissao_pct}% desde que você vendeu.`,
     };
@@ -83,7 +96,6 @@ function vereditoAutomatico(produto, historico) {
   if (comissaoR$ >= 3) {
     return {
       nivel: "bom",
-      icone: "✅",
       texto: `Comissão decente — R$ ${comissaoR$.toFixed(2)} por venda`,
       detalhes: "Vale testar com pequeno orçamento.",
     };
@@ -91,7 +103,6 @@ function vereditoAutomatico(produto, historico) {
 
   return {
     nivel: "atencao",
-    icone: "⚠️",
     texto: `Comissão moderada — R$ ${comissaoR$.toFixed(2)} por venda`,
     detalhes: "Avaliar concorrência e CPC do nicho antes de promover.",
   };
@@ -124,6 +135,12 @@ function ProdutoCard({ produto, historico, onSalvar, jaSalvoComoBackup }) {
     ruim: "bg-red-50 border-red-200 text-red-800",
   };
 
+  const VereditoIcon = veredito.nivel === "bom"
+    ? CheckCircle2
+    : veredito.nivel === "atencao"
+      ? Lightbulb
+      : AlertTriangle;
+
   return (
     <div className="bg-white border border-gray-200 rounded-lg p-4">
       <div className="flex gap-4">
@@ -137,8 +154,17 @@ function ProdutoCard({ produto, historico, onSalvar, jaSalvoComoBackup }) {
 
         <div className="flex-1 min-w-0">
           <div className="font-semibold text-sm text-gray-800 truncate">{produto.nome}</div>
-          <div className="text-xs text-gray-500 mt-0.5">🏪 {produto.loja}</div>
-          <div className="text-xs text-gray-500">⭐ {produto.rating} · 🛒 {produto.vendas_shopee} vendas Shopee</div>
+          <div className="text-xs text-gray-500 mt-0.5 flex items-center gap-1">
+            <Store size={12} className="text-gray-400" />
+            <span>{produto.loja}</span>
+          </div>
+          <div className="text-xs text-gray-500 flex items-center gap-2">
+            <span className="flex items-center gap-1">
+              <Star size={12} className="text-gray-400" />
+              {produto.rating}
+            </span>
+            <span>{fmtNum(produto.vendas_shopee)} vendas Shopee</span>
+          </div>
 
           <div className="mt-2 flex gap-4 text-sm">
             <div>
@@ -163,7 +189,10 @@ function ProdutoCard({ produto, historico, onSalvar, jaSalvoComoBackup }) {
 
       {historico?.ja_vendeu && (
         <div className="mt-3 p-3 bg-blue-50 border border-blue-200 rounded text-xs">
-          <div className="font-semibold text-blue-900 mb-1">📊 Sua performance histórica:</div>
+          <div className="font-semibold text-blue-900 mb-1 flex items-center gap-2">
+            <BarChart3 size={14} />
+            <span>Sua performance histórica:</span>
+          </div>
           <div className="grid grid-cols-3 gap-2 text-blue-800">
             <div>• Vendas: <strong>{historico.vendas_minhas}</strong></div>
             <div>• Comissão: <strong>{fmt(historico.comissao_total_minha)}</strong></div>
@@ -183,7 +212,10 @@ function ProdutoCard({ produto, historico, onSalvar, jaSalvoComoBackup }) {
       )}
 
       <div className={`mt-3 p-3 border rounded ${vereditoStyle[veredito.nivel]}`}>
-        <div className="font-semibold text-sm">{veredito.icone} {veredito.texto}</div>
+        <div className="font-semibold text-sm flex items-center gap-2">
+          <VereditoIcon size={14} />
+          <span>{veredito.texto}</span>
+        </div>
         <div className="text-xs mt-1">{veredito.detalhes}</div>
       </div>
 
@@ -203,18 +235,22 @@ function ProdutoCard({ produto, historico, onSalvar, jaSalvoComoBackup }) {
             disabled={salvando}
             className="px-3 py-1.5 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 disabled:bg-gray-300"
           >
-            {salvando ? "Salvando..." : "💾 Salvar"}
+            <span className="inline-flex items-center gap-2">
+              <Save size={14} />
+              <span>{salvando ? "Salvando..." : "Salvar"}</span>
+            </span>
           </button>
         </div>
       ) : (
-        <div className="mt-3 p-2 bg-green-50 border border-green-200 rounded text-sm text-green-700">
-          ✅ Já está nos seus backups.
+        <div className="mt-3 p-2 bg-green-50 border border-green-200 rounded text-sm text-green-700 flex items-center gap-2">
+          <CheckCircle2 size={14} />
+          <span>Já está nos seus backups.</span>
         </div>
       )}
 
       {erro && (
         <div className="mt-2 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-700">
-          ❌ {erro}
+          {erro}
         </div>
       )}
     </div>
@@ -261,7 +297,7 @@ function AbaCadastrar({ onCadastrado }) {
     <div className="space-y-4">
       <div className="bg-white border border-gray-200 rounded-lg p-4">
         <label className="block text-sm font-medium text-gray-700 mb-2">
-          🔍 Cole o link Shopee:
+          Cole o link Shopee:
         </label>
         <div className="flex gap-2">
           <input
@@ -289,7 +325,7 @@ function AbaCadastrar({ onCadastrado }) {
 
       {erro && (
         <div className="p-3 bg-red-50 border border-red-200 rounded text-sm text-red-700">
-          ❌ {erro}
+          {erro}
         </div>
       )}
 
@@ -362,7 +398,9 @@ function AbaListagem({ refreshTrigger }) {
   if (backups.length === 0) {
     return (
       <div className="text-center py-12 bg-gray-50 rounded border border-gray-200">
-        <div className="text-4xl mb-2">📦</div>
+        <div className="flex justify-center mb-2">
+          <Archive size={32} className="text-gray-400" />
+        </div>
         <div className="text-gray-700 font-medium">Nenhum produto cadastrado ainda</div>
         <div className="text-sm text-gray-500 mt-1">Vá na aba "Cadastrar" para adicionar seu primeiro backup.</div>
       </div>
@@ -374,8 +412,8 @@ function AbaListagem({ refreshTrigger }) {
       <div className="flex gap-2">
         {[
           { id: "todos", label: `Todos (${backups.length})` },
-          { id: "alertas", label: `⚠️ Com alertas (${backups.filter((b) => (b.alertas?.length || 0) > 0).length})` },
-          { id: "principais", label: `⭐ Principais (${backups.filter((b) => b.marcadoPrincipal).length})` },
+          { id: "alertas", label: `Com alertas (${backups.filter((b) => (b.alertas?.length || 0) > 0).length})` },
+          { id: "principais", label: `Principais (${backups.filter((b) => b.marcadoPrincipal).length})` },
         ].map((opt) => (
           <button
             key={opt.id}
@@ -406,17 +444,20 @@ function AbaListagem({ refreshTrigger }) {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-start justify-between gap-2">
                     <div className="flex-1 min-w-0">
-                      {b.marcadoPrincipal && <span className="text-yellow-500 mr-1">⭐</span>}
+                      {b.marcadoPrincipal && <Star size={14} className="inline-block text-yellow-500 mr-1" />}
                       <span className="font-medium text-sm text-gray-800 truncate">
                         {b.apelido || b.nome}
                       </span>
                     </div>
                   </div>
-                  <div className="text-xs text-gray-500">🏪 {b.loja}</div>
+                  <div className="text-xs text-gray-500 flex items-center gap-1">
+                    <Store size={12} className="text-gray-400" />
+                    <span>{b.loja}</span>
+                  </div>
                   <div className="flex gap-4 text-xs mt-1">
-                    <span>💵 {fmt(b.preco)}</span>
-                    <span>💰 {b.comissao_pct}% ({fmt(comissaoR$)})</span>
-                    <span>🛒 {b.vendas_shopee} vendas Shopee</span>
+                    <span>{fmt(b.preco)}</span>
+                    <span>{b.comissao_pct}% ({fmt(comissaoR$)})</span>
+                    <span>{fmtNum(b.vendas_shopee)} vendas Shopee</span>
                   </div>
                   <div className="text-xs text-gray-400 mt-1">
                     Atualizado {formatTempoAtras(b.ultima_verificacao)}
@@ -432,7 +473,15 @@ function AbaListagem({ refreshTrigger }) {
                       key={i}
                       className={`text-xs p-2 rounded ${a.nivel === "critico" ? "bg-red-50 text-red-700" : a.nivel === "aviso" ? "bg-orange-50 text-orange-700" : "bg-green-50 text-green-700"}`}
                     >
-                      {a.nivel === "critico" ? "🔴" : a.nivel === "aviso" ? "🟠" : "🟢"} {a.mensagem}
+                  <span className="inline-flex items-center gap-2">
+                    {a.nivel === "critico"
+                      ? <AlertTriangle size={12} />
+                      : a.nivel === "aviso"
+                        ? <Info size={12} />
+                        : <CheckCircle2 size={12} />
+                    }
+                    <span>{a.mensagem}</span>
+                  </span>
                     </div>
                   ))}
                 </div>
@@ -445,7 +494,10 @@ function AbaListagem({ refreshTrigger }) {
                   disabled={atualizando === b.itemId}
                   className="px-2.5 py-1 text-xs bg-blue-50 text-blue-700 hover:bg-blue-100 rounded disabled:opacity-50"
                 >
-                  {atualizando === b.itemId ? "..." : "🔄 Atualizar"}
+                  <span className="inline-flex items-center gap-1">
+                    <RefreshCw size={12} />
+                    <span>{atualizando === b.itemId ? "Atualizando..." : "Atualizar"}</span>
+                  </span>
                 </button>
                 <button
                   type="button"
@@ -455,7 +507,10 @@ function AbaListagem({ refreshTrigger }) {
                   }}
                   className="px-2.5 py-1 text-xs bg-gray-100 text-gray-700 hover:bg-gray-200 rounded"
                 >
-                  📋 Copiar link
+                  <span className="inline-flex items-center gap-1">
+                    <Copy size={12} />
+                    <span>Copiar link</span>
+                  </span>
                 </button>
                 <button
                   type="button"
@@ -465,14 +520,20 @@ function AbaListagem({ refreshTrigger }) {
                   }}
                   className="px-2.5 py-1 text-xs bg-yellow-50 text-yellow-700 hover:bg-yellow-100 rounded"
                 >
-                  {b.marcadoPrincipal ? "⭐ Desmarcar" : "☆ Marcar"}
+                  <span className="inline-flex items-center gap-1">
+                    <Star size={12} />
+                    <span>{b.marcadoPrincipal ? "Desmarcar" : "Marcar"}</span>
+                  </span>
                 </button>
                 <button
                   type="button"
                   onClick={() => handleRemover(b.itemId, b.apelido || b.nome)}
                   className="px-2.5 py-1 text-xs bg-red-50 text-red-700 hover:bg-red-100 rounded"
                 >
-                  🗑️ Remover
+                  <span className="inline-flex items-center gap-1">
+                    <Trash2 size={12} />
+                    <span>Remover</span>
+                  </span>
                 </button>
               </div>
             </div>
@@ -505,7 +566,9 @@ function AbaSimilar({ backups }) {
   if (backups.length === 0) {
     return (
       <div className="text-center py-12 bg-gray-50 rounded border border-gray-200">
-        <div className="text-4xl mb-2">🔍</div>
+        <div className="flex justify-center mb-2">
+          <Search size={32} className="text-gray-400" />
+        </div>
         <div className="text-gray-700 font-medium">Cadastre produtos primeiro</div>
         <div className="text-sm text-gray-500 mt-1">Você precisa ter backups cadastrados pra buscar similares.</div>
       </div>
@@ -546,14 +609,14 @@ function AbaSimilar({ backups }) {
       {!loading && similares.length > 0 && (
         <div className="space-y-2">
           <div className="text-sm text-gray-600 mb-2">
-            🔍 {similares.length} produtos da loja <strong>{produtoSelecionado.loja}</strong> que você já vendeu:
+            {similares.length} produtos da loja <strong>{produtoSelecionado.loja}</strong> que você já vendeu:
           </div>
           {similares.map((s) => (
             <div key={s.docId} className="bg-white border border-gray-200 rounded p-3 flex justify-between items-center">
               <div className="flex-1 min-w-0">
                 <div className="text-sm font-medium text-gray-800 truncate">{s.nome}</div>
                 <div className="text-xs text-gray-500 mt-0.5">
-                  💵 {fmt(s.preco)} · 💰 Comissão recebida: {fmt(s.comissao_total)} · 🛒 {s.vendas} vendas
+                  {fmt(s.preco)} · Comissão recebida: {fmt(s.comissao_total)} · {fmtNum(s.vendas)} vendas
                 </div>
               </div>
               <a
@@ -621,7 +684,9 @@ function AbaGrupos({ refreshTrigger, onChange }) {
 
       {grupos.length === 0 && !criandoGrupo && (
         <div className="text-center py-12 bg-gray-50 rounded border border-gray-200">
-          <div className="text-4xl mb-2">🎯</div>
+          <div className="flex justify-center mb-2">
+            <Target size={32} className="text-gray-400" />
+          </div>
           <div className="text-gray-700 font-medium">Nenhum grupo cadastrado</div>
           <div className="text-sm text-gray-500 mt-1">
             Crie grupos pra comparar produtos da mesma marca em lojas diferentes.
@@ -724,7 +789,10 @@ function ModalCriarGrupo({ onClose, onCriado }) {
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
       <div className="bg-white rounded-lg max-w-lg w-full p-5">
         <div className="flex items-center justify-between mb-3">
-          <h3 className="font-semibold text-gray-800">🎯 Criar grupo de backup</h3>
+          <h3 className="font-semibold text-gray-800 flex items-center gap-2">
+            <Target size={16} />
+            <span>Criar grupo de backup</span>
+          </h3>
           <button type="button" onClick={onClose} className="text-gray-400 hover:text-gray-600">✕</button>
         </div>
 
@@ -766,7 +834,7 @@ function ModalCriarGrupo({ onClose, onCriado }) {
 
           {erro && (
             <div className="p-2 bg-red-50 border border-red-200 rounded text-xs text-red-700">
-              ❌ {erro}
+              {erro}
             </div>
           )}
 
@@ -883,14 +951,14 @@ function ModalAdicionarBackup({ grupoId, onClose, onAdicionado }) {
             onClick={() => setModo("link")}
             className={`px-3 py-1.5 text-sm ${modo === "link" ? "border-b-2 border-blue-600 text-blue-600" : "text-gray-600"}`}
           >
-            🔗 Colar Link
+            Colar link
           </button>
           <button
             type="button"
             onClick={() => setModo("existente")}
             className={`px-3 py-1.5 text-sm ${modo === "existente" ? "border-b-2 border-blue-600 text-blue-600" : "text-gray-600"}`}
           >
-            📋 Produto já cadastrado
+            Produto já cadastrado
           </button>
         </div>
 
@@ -923,7 +991,10 @@ function ModalAdicionarBackup({ grupoId, onClose, onAdicionado }) {
                   )}
                   <div className="flex-1 min-w-0">
                     <div className="font-medium text-sm truncate">{produtoEncontrado.produto.nome}</div>
-                    <div className="text-xs text-gray-500">🏪 {produtoEncontrado.produto.loja}</div>
+                    <div className="text-xs text-gray-500 flex items-center gap-1">
+                      <Store size={12} className="text-gray-400" />
+                      <span>{produtoEncontrado.produto.loja}</span>
+                    </div>
                     <div className="text-xs mt-1">
                       {fmt(produtoEncontrado.produto.preco)} · {produtoEncontrado.produto.comissao_pct}%
                     </div>
@@ -977,7 +1048,7 @@ function ModalAdicionarBackup({ grupoId, onClose, onAdicionado }) {
 
         {erro && (
           <div className="mt-3 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-700">
-            ❌ {erro}
+            {erro}
           </div>
         )}
       </div>
@@ -1029,7 +1100,7 @@ function ModalTrocarPrincipal({ grupo, criterio, onClose, onTrocado }) {
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
       <div className="bg-white rounded-lg max-w-xl w-full p-5 max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between mb-3">
-          <h3 className="font-semibold text-gray-800">❌ Pausar principal e trocar</h3>
+          <h3 className="font-semibold text-gray-800">Pausar principal e trocar</h3>
           <button type="button" onClick={onClose} className="text-gray-400 hover:text-gray-600">✕</button>
         </div>
 
@@ -1069,9 +1140,13 @@ function ModalTrocarPrincipal({ grupo, criterio, onClose, onTrocado }) {
 
           {recomendado && (
             <div className="p-3 bg-yellow-50 border border-yellow-200 rounded text-sm">
-              🤖 <strong>Recomendado:</strong> {recomendado.apelido || recomendado.nome} ({recomendado.loja})
+              <div className="inline-flex items-center gap-2">
+                <Lightbulb size={14} className="text-yellow-700" />
+                <strong>Recomendado:</strong>
+                <span>{recomendado.apelido || recomendado.nome} ({recomendado.loja})</span>
+              </div>
               <div className="text-xs text-yellow-700 mt-1">
-                Ordenado por: {criterio === "comissao" ? "comissão R$" : criterio === "rating" ? "rating" : "vendas Shopee"}
+                Ordenado por: {criterio === "comissao" ? "comissão (R$)" : criterio === "rating" ? "rating" : "vendas Shopee"}
               </div>
             </div>
           )}
@@ -1095,12 +1170,19 @@ function ModalTrocarPrincipal({ grupo, criterio, onClose, onTrocado }) {
                     <div className="flex-1 min-w-0">
                       <div className="text-sm font-medium truncate">
                         {b.apelido || b.nome}
-                        {idx === 0 && <span className="ml-2 text-xs text-green-600">🏆 Recomendado</span>}
+                      {idx === 0 && <span className="ml-2 text-xs text-green-700 font-semibold">Recomendado</span>}
                       </div>
-                      <div className="text-xs text-gray-500">🏪 {b.loja}</div>
-                      <div className="text-xs mt-0.5">
-                        {fmt(b.preco)} · {b.comissao_pct}% ({fmt(comissaoR$)}) · ⭐ {b.rating || "—"}
-                      </div>
+                    <div className="text-xs text-gray-500 flex items-center gap-1">
+                      <Store size={12} className="text-gray-400" />
+                      <span>{b.loja}</span>
+                    </div>
+                    <div className="text-xs mt-0.5 flex items-center gap-2 flex-wrap">
+                      <span>{fmt(b.preco)} · {b.comissao_pct}% ({fmt(comissaoR$)})</span>
+                      <span className="inline-flex items-center gap-1">
+                        <Star size={12} className="text-gray-400" />
+                        <span>{b.rating || "—"}</span>
+                      </span>
+                    </div>
                     </div>
                   </label>
                 );
@@ -1110,7 +1192,7 @@ function ModalTrocarPrincipal({ grupo, criterio, onClose, onTrocado }) {
 
           {erro && (
             <div className="p-2 bg-red-50 border border-red-200 rounded text-xs text-red-700">
-              ❌ {erro}
+              {erro}
             </div>
           )}
 
@@ -1144,26 +1226,75 @@ function CardGrupo({ grupo, expandido, criterio, onCriterioChange, onToggleExpan
     .map((id) => grupo.produtos[id])
     .filter(Boolean);
 
+  const comissaoR$Do = (p) => (Number(p?.preco || 0) * Number(p?.comissao_pct || 0)) / 100;
+
+  const fmtPct = (n) => {
+    const num = Number(n || 0);
+    if (Number.isInteger(num)) return `${num}%`;
+    return `${num.toFixed(1)}%`;
+  };
+
   const backupsOrdenados = [...backups].sort((a, b) => {
-    if (criterio === "comissao") {
-      const aR = (Number(a.preco || 0) * Number(a.comissao_pct || 0)) / 100;
-      const bR = (Number(b.preco || 0) * Number(b.comissao_pct || 0)) / 100;
-      return bR - aR;
-    }
+    if (criterio === "comissao") return comissaoR$Do(b) - comissaoR$Do(a);
     if (criterio === "rating") return Number(b.rating || 0) - Number(a.rating || 0);
     if (criterio === "vendas") return Number(b.vendas_shopee || 0) - Number(a.vendas_shopee || 0);
     return 0;
   });
 
+  const calcularSugestao = () => {
+    if (!principal || backupsOrdenados.length === 0) return null;
+    const melhor = backupsOrdenados[0];
+    if (!melhor) return null;
+
+    if (criterio === "comissao") {
+      const cP = comissaoR$Do(principal);
+      const cB = comissaoR$Do(melhor);
+      if (cB > cP) {
+        const diff = cB - cP;
+        const pct = cP > 0 ? ((cB - cP) / cP) * 100 : 100;
+        return {
+          melhor,
+          motivo: `Comissão R$ ${diff.toFixed(2)} maior por venda (+${pct.toFixed(0)}%)`,
+          detalhe: `Principal: ${fmt(cP)} · Backup: ${fmt(cB)}`,
+        };
+      }
+    }
+    if (criterio === "rating") {
+      const rP = Number(principal.rating || 0);
+      const rB = Number(melhor.rating || 0);
+      if (rB > rP) {
+        return {
+          melhor,
+          motivo: `Rating melhor (${rB.toFixed(1)} vs ${rP.toFixed(1)})`,
+          detalhe: "Produtos com melhor avaliação convertem mais.",
+        };
+      }
+    }
+    if (criterio === "vendas") {
+      const vP = Number(principal.vendas_shopee || 0);
+      const vB = Number(melhor.vendas_shopee || 0);
+      if (vB > vP) {
+        return {
+          melhor,
+          motivo: `Mais vendido (${vB} vs ${vP} vendas Shopee)`,
+          detalhe: "Produtos com mais histórico de vendas tendem a converter melhor.",
+        };
+      }
+    }
+    return null;
+  };
+
+  const sugestao = calcularSugestao();
+
   return (
     <div className="bg-white border border-gray-200 rounded-lg p-4">
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2 cursor-pointer flex-1 min-w-0" onClick={onToggleExpand}>
-          <span className="text-lg">🎯</span>
+          <Target size={16} className="text-gray-500" />
           <div className="flex-1 min-w-0">
             <div className="font-semibold text-gray-800 truncate">{grupo.nome}</div>
             <div className="text-xs text-gray-500">
-              ⭐ {principal?.apelido || principal?.nome || "—"} + {backups.length} backup{backups.length !== 1 ? "s" : ""}
+              {principal?.apelido || principal?.nome || "—"} · {backups.length} backup{backups.length !== 1 ? "s" : ""}
             </div>
           </div>
           <span className="text-gray-400">{expandido ? "▼" : "▶"}</span>
@@ -1173,22 +1304,58 @@ function CardGrupo({ grupo, expandido, criterio, onCriterioChange, onToggleExpan
           onClick={onRemoverGrupo}
           className="text-xs text-red-600 hover:bg-red-50 px-2 py-1 rounded ml-2"
         >
-          🗑️
+          <Trash2 size={14} />
         </button>
       </div>
 
       {expandido && (
         <>
+          {sugestao && (
+            <div className="mb-3 p-3 bg-blue-50 border-l-4 border-blue-500 rounded">
+              <div className="font-semibold text-blue-900 text-sm flex items-center gap-1">
+                <Lightbulb size={14} />
+                <span>Sugestão</span>
+              </div>
+              <div className="text-sm text-blue-800 mt-1">
+                Trocar Principal por <strong>{sugestao.melhor.apelido || sugestao.melhor.nome}</strong> ({sugestao.melhor.loja})
+              </div>
+              <div className="text-xs text-blue-700 mt-1">
+                <strong>Motivo:</strong> {sugestao.motivo}
+              </div>
+              <div className="text-xs text-blue-600 mt-0.5">
+                {sugestao.detalhe}
+              </div>
+              <button
+                type="button"
+                onClick={onTrocarPrincipal}
+                className="mt-2 px-3 py-1 bg-blue-600 text-white text-xs rounded hover:bg-blue-700"
+              >
+                Trocar agora
+              </button>
+            </div>
+          )}
+
           {principal && (
             <div className="p-3 bg-yellow-50 border border-yellow-200 rounded mb-3">
               <div className="flex items-start gap-3">
                 {principal.imagem && <img src={principal.imagem} alt="" className="w-16 h-16 object-cover rounded" />}
                 <div className="flex-1 min-w-0">
-                  <div className="font-medium text-sm">⭐ PRINCIPAL: {principal.apelido || principal.nome}</div>
-                  <div className="text-xs text-gray-600">🏪 {principal.loja}</div>
-                  <div className="text-xs mt-1">
-                    {fmt(principal.preco)} · {principal.comissao_pct}% ({fmt((Number(principal.preco || 0) * Number(principal.comissao_pct || 0)) / 100)})
-                    {principal.rating && ` · ⭐ ${principal.rating}`}
+                  <div className="font-medium text-sm flex items-center gap-2">
+                    <Star size={14} className="text-yellow-600" />
+                    <span>Principal: {principal.apelido || principal.nome}</span>
+                  </div>
+                  <div className="text-xs text-gray-600 flex items-center gap-1">
+                    <Store size={12} className="text-gray-400" />
+                    <span>{principal.loja}</span>
+                  </div>
+                  <div className="text-xs mt-1 flex items-center gap-2 flex-wrap">
+                    <span>{fmt(principal.preco)} · {fmtPct(principal.comissao_pct)} ({fmt(comissaoR$Do(principal))})</span>
+                    {principal.rating && (
+                      <span className="inline-flex items-center gap-1">
+                        <Star size={12} className="text-gray-400" />
+                        <span>{Number(principal.rating).toFixed(1)}</span>
+                      </span>
+                    )}
                   </div>
                 </div>
               </div>
@@ -1198,7 +1365,7 @@ function CardGrupo({ grupo, expandido, criterio, onCriterioChange, onToggleExpan
                 disabled={backups.length === 0}
                 className="mt-2 w-full px-3 py-1.5 bg-orange-100 text-orange-700 text-sm rounded hover:bg-orange-200 disabled:bg-gray-100 disabled:text-gray-400"
               >
-                ❌ Pausar e Trocar Principal
+                Pausar e trocar principal
               </button>
             </div>
           )}
@@ -1207,9 +1374,9 @@ function CardGrupo({ grupo, expandido, criterio, onCriterioChange, onToggleExpan
             <div className="flex items-center gap-2 mb-2 text-xs">
               <span className="text-gray-600">Ordenar backups por:</span>
               {[
-                ["comissao", "💰 Comissão R$"],
-                ["rating", "⭐ Rating"],
-                ["vendas", "📊 Vendas"],
+                ["comissao", "Comissão (R$)"],
+                ["rating", "Rating"],
+                ["vendas", "Vendas"],
               ].map(([id, label]) => (
                 <button
                   key={id}
@@ -1230,26 +1397,48 @@ function CardGrupo({ grupo, expandido, criterio, onCriterioChange, onToggleExpan
               </div>
             ) : (
               backupsOrdenados.map((b, idx) => {
-                const comissaoR$ = (Number(b.preco || 0) * Number(b.comissao_pct || 0)) / 100;
+                const cB = comissaoR$Do(b);
+                const cP = comissaoR$Do(principal);
+                const diffR$ = cB - cP;
+                const diffPct = cP > 0 ? ((cB - cP) / cP) * 100 : 0;
+                const isMelhor = diffR$ > 0;
+                const isPior = diffR$ < 0;
+                const corDiff = isMelhor ? "text-green-700" : isPior ? "text-red-600" : "text-gray-500";
+                const setaDiff = isMelhor ? "▲" : isPior ? "▼" : "—";
+
                 return (
-                  <div key={b.itemId} className="flex items-start gap-3 p-2 border border-gray-200 rounded">
+                  <div key={b.itemId} className={`flex items-start gap-3 p-2 border rounded ${idx === 0 && sugestao ? "border-blue-300 bg-blue-50/30" : "border-gray-200"}`}>
                     {b.imagem && <img src={b.imagem} alt="" className="w-12 h-12 object-cover rounded" />}
                     <div className="flex-1 min-w-0">
                       <div className="text-sm font-medium truncate">
                         {b.apelido || b.nome}
-                        {idx === 0 && <span className="ml-2 text-xs text-green-600">🏆</span>}
+                        {idx === 0 && sugestao && <span className="ml-2 text-xs text-blue-700 font-bold">Recomendado</span>}
                       </div>
-                      <div className="text-xs text-gray-500">🏪 {b.loja}</div>
-                      <div className="text-xs mt-0.5">
-                        {fmt(b.preco)} · {b.comissao_pct}% ({fmt(comissaoR$)}) · ⭐ {b.rating || "—"}
+                      <div className="text-xs text-gray-500 flex items-center gap-1">
+                        <Store size={12} className="text-gray-400" />
+                        <span>{b.loja}</span>
                       </div>
+                      <div className="text-xs mt-0.5 flex items-center gap-2">
+                        <span>{fmt(b.preco)} · {fmtPct(b.comissao_pct)} ({fmt(cB)})</span>
+                        {b.rating && (
+                          <span className="inline-flex items-center gap-1">
+                            <Star size={12} className="text-gray-400" />
+                            <span>{Number(b.rating).toFixed(1)}</span>
+                          </span>
+                        )}
+                      </div>
+                      {principal && cP !== cB && (
+                        <div className={`text-xs mt-1 font-medium ${corDiff}`}>
+                          {setaDiff} {isMelhor ? "+" : ""}{fmt(Math.abs(diffR$))} ({isMelhor ? "+" : "-"}{Math.abs(diffPct).toFixed(0)}%) vs principal
+                        </div>
+                      )}
                     </div>
                     <button
                       type="button"
                       onClick={() => onRemoverBackup(b.itemId)}
                       className="text-xs text-red-600 hover:bg-red-50 px-2 py-1 rounded flex-shrink-0"
                     >
-                      🗑️
+                      <Trash2 size={14} />
                     </button>
                   </div>
                 );
@@ -1262,12 +1451,15 @@ function CardGrupo({ grupo, expandido, criterio, onCriterioChange, onToggleExpan
             onClick={onAdicionarBackup}
             className="mt-3 w-full px-3 py-1.5 bg-blue-50 text-blue-700 text-sm rounded hover:bg-blue-100 border border-dashed border-blue-300"
           >
-            + Adicionar backup
+            <span className="inline-flex items-center gap-2">
+              <Plus size={14} />
+              <span>Adicionar backup</span>
+            </span>
           </button>
 
           {grupo.historico && grupo.historico.length > 0 && (
             <div className="mt-3 pt-3 border-t border-gray-200">
-              <div className="text-xs font-medium text-gray-700 mb-1">📜 Histórico de trocas ({grupo.historico.length})</div>
+              <div className="text-xs font-medium text-gray-700 mb-1">Histórico de trocas ({grupo.historico.length})</div>
               <div className="space-y-1 max-h-40 overflow-y-auto">
                 {[...grupo.historico].reverse().map((h, i) => {
                   const dt = h.data?.toDate?.() || new Date(h.data);
@@ -1312,7 +1504,10 @@ export default function BackupPage() {
   return (
     <div className="p-4 max-w-5xl mx-auto">
       <div className="mb-4">
-        <h1 className="text-xl font-bold text-gray-800">📦 Backup de Produtos</h1>
+        <h1 className="text-xl font-bold text-gray-800 flex items-center gap-2">
+          <Archive size={18} className="text-gray-700" />
+          <span>Backup de Produtos</span>
+        </h1>
         <p className="text-sm text-gray-500 mt-1">
           Cadastre produtos Shopee como reserva — sistema monitora preço, comissão e período automaticamente.
         </p>
@@ -1320,10 +1515,10 @@ export default function BackupPage() {
 
       <div className="flex gap-1 mb-4 border-b border-gray-200">
         {[
-          { id: "cadastrar", label: "➕ Cadastrar" },
-          { id: "listagem", label: "📋 Meus Backups" },
-          { id: "grupos", label: "🎯 Grupos" },
-          { id: "similar", label: "🔍 Buscar Similar" },
+          { id: "cadastrar", label: "Cadastrar" },
+          { id: "listagem", label: "Meus Backups" },
+          { id: "grupos", label: "Grupos" },
+          { id: "similar", label: "Buscar Similar" },
         ].map((opt) => (
           <button
             key={opt.id}
