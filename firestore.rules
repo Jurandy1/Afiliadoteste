@@ -99,6 +99,24 @@ service cloud.firestore {
       allow delete: if true;
     }
 
+    // ── Sumários (dashboard pré-calculado pelo backend) ─────────
+    match /sumarios/{sumarioId} {
+      allow read: if true;
+      allow write: if false;  // só backend (Admin SDK) escreve
+    }
+
+    // ── Shopee Daily (agregado diário pra filtros de período) ──
+    match /shopee_daily/{dailyId} {
+      allow read: if true;
+      allow write: if false;  // só backend (Admin SDK) escreve
+    }
+
+    // ── Sync State (cursor do incremental) ──────────────────────
+    match /sync_state/{stateId} {
+      allow read: if true;
+      allow write: if false;  // só backend (Admin SDK) escreve
+    }
+
     match /backup_produtos/{produtoId} {
       allow read: if true;
       allow create: if request.resource.data.keys().hasAny(['itemId', 'shopId'])
