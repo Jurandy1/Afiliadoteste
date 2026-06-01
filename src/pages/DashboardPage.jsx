@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useMemo, useState } from "react";
+import { collection, getDocs } from "firebase/firestore";
 import { BarChart3, DollarSign, ShoppingBag, Target, TrendingUp, Ticket } from "lucide-react";
 import { buscarProdutos, dispararBackfillHoje, getComparacaoMensal, getDashboardData, getDashboardKPIs, getDashboardKPIsByPeriod, getProdutosPagina, getResumoSemana, getSubIdPanelData, getUltimaAtualizacaoHoje } from "../services/repositories/metricsRepository";
 import { filterProdutos, sortProdutos } from "../domain/attribution/productFilters";
@@ -15,6 +16,7 @@ import SortTh from "../components/tables/SortTh";
 import PaginationBar from "../components/tables/PaginationBar";
 import Badge from "../components/cards/Badge";
 import { ExternalLink } from "lucide-react";
+import { db } from "../services/firebase/client";
 
 function readDashboardSettings() {
   try {
@@ -176,6 +178,9 @@ export default function DashboardPage() {
   const [onlyProfit,   setOnlyProfit]   = useState(false);
   const [settings,     setSettings]     = useState(readDashboardSettings);
   const [subSearch,    setSubSearch]    = useState("");
+  const [subIdsSelecionados, setSubIdsSelecionados] = useState([]);
+  const [subIdEstimadasMap, setSubIdEstimadasMap] = useState({});
+  const [subIdFiltroBusca, setSubIdFiltroBusca] = useState("");
   const [subColsOpen,  setSubColsOpen]  = useState(false);
   const [subCols,      setSubCols]      = useState(readSubIdColumnPrefs);
   const [prodCursor,   setProdCursor]   = useState({ lastDoc: null, hasMore: false });
@@ -222,6 +227,18 @@ export default function DashboardPage() {
           setSubIdsPanel(subIds);
           setSubIdDiagnosticsPanel(subIdDiagnostics);
         }).catch(() => {});
+        getDocs(collection(db, "subid_vendas"))
+          .then((snap) => {
+            const estimadas = {};
+            snap.forEach((d) => {
+              const data = d.data() || {};
+              estimadas[d.id] = Number(data.comissoes_estimadas || 0);
+            });
+            if (!abortRef.current) setSubIdEstimadasMap(estimadas);
+          })
+          .catch(() => {
+            if (!abortRef.current) setSubIdEstimadasMap({});
+          });
       }
       if (periodoFiltro === "hoje") {
         setAtualizandoHoje(true);
@@ -407,6 +424,9 @@ export default function DashboardPage() {
   const subIdsFilteredSorted = useMemo(() => {
     const base = [...(subIds || [])];
     let rows = base;
+    if (subIdsSelecionados.length > 0) {
+      rows = rows.filter((r) => subIdsSelecionados.includes(r.subid || r.id));
+    }
     const q = String(subSearch || "").trim().toLowerCase();
     if (q) rows = rows.filter((r) => String(r.subid || "").toLowerCase().includes(q));
     if (onlyLoss && !onlyProfit) rows = rows.filter((r) => (r.lucro || 0) < 0);
@@ -418,7 +438,55 @@ export default function DashboardPage() {
       return (bv - av) * dir;
     });
     return rows;
-  }, [subIds, onlyLoss, onlyProfit, subSortField, subSortDir, subSearch]);
+  }, [subIds, onlyLoss, onlyProfit, subSortField, subSortDir, subSearch, subIdsSelecionados]);
+
+  const kpisDosSelecionados = useMemo(() => {
+    if (subIdsSelecionados.length === 0) return null;
+
+    const filtrados = (subIds || []).filter((r) => subIdsSelecionados.includes(r.subid || r.id));
+    if (filtrados.length === 0) return null;
+
+    const comissao = filtrados.reduce((s, r) => s + (r.comissoes || 0), 0);
+    const faturamento = filtrados.reduce((s, r) => s + (r.faturamento || 0), 0);
+    const gasto = filtrados.reduce((s, r) => s + (r.gasto || 0), 0);
+    const vendas = filtrados.reduce((s, r) => s + (r.total_vendas || 0), 0);
+    const lucro = comissao - gasto;
+    const roi = gasto > 0 ? (lucro / gasto) * 100 : 0;
+    const roas = gasto > 0 ? comissao / gasto : 0;
+
+    const comissaoEstimada = filtrados.reduce((s, r) => {
+      const key = r.subid || r.id || "";
+      if (key) return s + (subIdEstimadasMap[key] || 0);
+      return s + (subIdEstimadasMap.missing_subid || 0);
+    }, 0);
+
+    return {
+      qtd: filtrados.length,
+      comissao,
+      comissaoEstimada,
+      faturamento,
+      gasto,
+      lucro,
+      roi,
+      roas,
+      vendas,
+    };
+  }, [subIds, subIdsSelecionados, subIdEstimadasMap]);
+
+  const todosSubIdsDisponiveis = useMemo(() => {
+    const set = new Set();
+    (subIds || []).forEach((r) => {
+      const sid = r.subid || r.id || "";
+      if (sid && sid !== "missing_subid") set.add(sid);
+    });
+    return [...set].sort();
+  }, [subIds]);
+
+  const subIdsParaCheckbox = useMemo(() => {
+    const q = subIdFiltroBusca.trim().toLowerCase();
+    if (!q) return todosSubIdsDisponiveis;
+    return todosSubIdsDisponiveis.filter((s) => s.toLowerCase().includes(q));
+  }, [todosSubIdsDisponiveis, subIdFiltroBusca]);
 
   const subIdVisibleColCount = 1 + Object.values(subCols || {}).filter(Boolean).length;
   const applySubColsPreset = (preset) => {
@@ -768,6 +836,140 @@ export default function DashboardPage() {
       {subIds && subIds.length > 0 && subIdDiagnostics?.isReliable && (
         <div className="bg-white rounded-lg border border-gray-200 overflow-hidden mb-4">
           <div className="px-4 py-3 border-b border-gray-100">
+            {subIds && subIds.length > 0 && todosSubIdsDisponiveis.length > 0 && (
+              <div className="mb-4 bg-white rounded-lg border border-gray-200 shadow-sm">
+                <div className="p-4 border-b border-gray-100">
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className="text-sm font-semibold text-gray-700 flex items-center gap-2">
+                      <span>Filtrar SubIDs</span>
+                      {subIdsSelecionados.length > 0 && (
+                        <span className="text-xs bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full">
+                          {subIdsSelecionados.length} selecionado(s)
+                        </span>
+                      )}
+                    </h3>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setSubIdsSelecionados(todosSubIdsDisponiveis)}
+                        className="text-xs px-3 py-1 bg-gray-100 hover:bg-gray-200 rounded-md text-gray-700"
+                      >
+                        Marcar todos
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSubIdsSelecionados([])}
+                        className="text-xs px-3 py-1 bg-gray-100 hover:bg-gray-200 rounded-md text-gray-700"
+                      >
+                        Limpar
+                      </button>
+                    </div>
+                  </div>
+
+                  <input
+                    type="text"
+                    placeholder="Buscar SubID..."
+                    value={subIdFiltroBusca}
+                    onChange={(e) => setSubIdFiltroBusca(e.target.value)}
+                    className="w-full px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:border-indigo-500"
+                  />
+                </div>
+
+                <div className="p-4 max-h-48 overflow-y-auto">
+                  <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-1">
+                    {subIdsParaCheckbox.map((sid) => (
+                      <label
+                        key={sid}
+                        className="flex items-center gap-2 text-sm cursor-pointer hover:bg-gray-50 px-2 py-1 rounded"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={subIdsSelecionados.includes(sid)}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setSubIdsSelecionados([...subIdsSelecionados, sid]);
+                            } else {
+                              setSubIdsSelecionados(subIdsSelecionados.filter((s) => s !== sid));
+                            }
+                          }}
+                          className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                        />
+                        <span className="truncate text-gray-700" title={sid}>{sid}</span>
+                      </label>
+                    ))}
+                  </div>
+                  {subIdsParaCheckbox.length === 0 && (
+                    <p className="text-sm text-gray-500 text-center py-4">
+                      Nenhum SubID encontrado
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {kpisDosSelecionados && (
+              <div className="mb-4 bg-gradient-to-r from-indigo-50 to-purple-50 rounded-lg border border-indigo-200 p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-semibold text-indigo-900">
+                    Resumo dos {kpisDosSelecionados.qtd} SubID(s) selecionado(s)
+                  </h3>
+                  <span className="text-xs text-indigo-600">
+                    {kpisDosSelecionados.vendas} vendas
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  <div className="bg-white rounded-md p-3 border border-indigo-100">
+                    <div className="text-xs text-gray-500 uppercase tracking-wide">Comissão Estimada</div>
+                    <div className="text-lg font-bold text-indigo-700">
+                      R$ {kpisDosSelecionados.comissaoEstimada.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </div>
+                  </div>
+                  <div className="bg-white rounded-md p-3 border border-indigo-100">
+                    <div className="text-xs text-gray-500 uppercase tracking-wide">Comissão Real</div>
+                    <div className="text-lg font-bold text-gray-900">
+                      R$ {kpisDosSelecionados.comissao.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </div>
+                  </div>
+                  <div className="bg-white rounded-md p-3 border border-indigo-100">
+                    <div className="text-xs text-gray-500 uppercase tracking-wide">Faturamento</div>
+                    <div className="text-lg font-bold text-gray-900">
+                      R$ {kpisDosSelecionados.faturamento.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </div>
+                  </div>
+                  <div className="bg-white rounded-md p-3 border border-indigo-100">
+                    <div className="text-xs text-gray-500 uppercase tracking-wide">Gasto</div>
+                    <div className="text-lg font-bold text-gray-900">
+                      R$ {kpisDosSelecionados.gasto.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </div>
+                  </div>
+                  <div className="bg-white rounded-md p-3 border border-indigo-100">
+                    <div className="text-xs text-gray-500 uppercase tracking-wide">Lucro</div>
+                    <div className={`text-lg font-bold ${kpisDosSelecionados.lucro >= 0 ? "text-green-600" : "text-red-600"}`}>
+                      R$ {kpisDosSelecionados.lucro.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </div>
+                  </div>
+                  <div className="bg-white rounded-md p-3 border border-indigo-100">
+                    <div className="text-xs text-gray-500 uppercase tracking-wide">ROI</div>
+                    <div className={`text-lg font-bold ${kpisDosSelecionados.roi >= 0 ? "text-green-600" : "text-red-600"}`}>
+                      {kpisDosSelecionados.roi.toFixed(2)}%
+                    </div>
+                  </div>
+                  <div className="bg-white rounded-md p-3 border border-indigo-100">
+                    <div className="text-xs text-gray-500 uppercase tracking-wide">ROAS</div>
+                    <div className="text-lg font-bold text-gray-900">
+                      {kpisDosSelecionados.roas.toFixed(2)}x
+                    </div>
+                  </div>
+                  <div className="bg-white rounded-md p-3 border border-indigo-100">
+                    <div className="text-xs text-gray-500 uppercase tracking-wide">Vendas</div>
+                    <div className="text-lg font-bold text-gray-900">
+                      {kpisDosSelecionados.vendas.toLocaleString("pt-BR")}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
             <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
               <h3 className="text-sm font-semibold">Detalhamento por SubID</h3>
               <span className="text-xs text-gray-400">{subIdsFilteredSorted.length} campanhas</span>
