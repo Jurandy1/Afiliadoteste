@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   Archive,
@@ -343,14 +343,16 @@ function AbaCadastrar({ onCadastrado }) {
 
 function AbaListagem({ refreshTrigger }) {
   const [backups, setBackups] = useState([]);
+  const [busca, setBusca] = useState("");
+  const [exibirCount, setExibirCount] = useState(30);
   const [loading, setLoading] = useState(true);
   const [atualizando, setAtualizando] = useState(null);
   const [filtro, setFiltro] = useState("todos");
 
-  const carregar = async () => {
+  const carregar = async (opcoes = {}) => {
     setLoading(true);
     try {
-      const lista = await listarBackups();
+      const lista = await listarBackups(opcoes);
       setBackups(lista);
     } catch (err) {
       console.error("Erro carregando backups:", err);
@@ -363,11 +365,28 @@ function AbaListagem({ refreshTrigger }) {
     carregar();
   }, [refreshTrigger]);
 
+  const backupsFiltrados = useMemo(() => {
+    const t = busca.trim().toLowerCase();
+    if (!t) return backups;
+    return backups.filter((b) => {
+      const nome = String(b.nome || "").toLowerCase();
+      const apelido = String(b.apelido || "").toLowerCase();
+      return nome.includes(t) || apelido.includes(t);
+    });
+  }, [backups, busca]);
+
+  const backupsExibidos = useMemo(
+    () => backupsFiltrados.slice(0, exibirCount),
+    [backupsFiltrados, exibirCount],
+  );
+
+  const temMaisParaCarregar = backupsFiltrados.length > exibirCount;
+
   const handleAtualizar = async (itemId) => {
     setAtualizando(itemId);
     try {
       await atualizarBackup(itemId);
-      await carregar();
+      await carregar({ force: true });
     } catch (err) {
       alert(`Erro: ${err?.message || String(err)}`);
     } finally {
@@ -385,7 +404,7 @@ function AbaListagem({ refreshTrigger }) {
     }
   };
 
-  const filtrados = backups.filter((b) => {
+  const filtrados = backupsExibidos.filter((b) => {
     if (filtro === "alertas") return (b.alertas?.length || 0) > 0;
     if (filtro === "principais") return b.marcadoPrincipal;
     return true;
@@ -409,11 +428,25 @@ function AbaListagem({ refreshTrigger }) {
 
   return (
     <div className="space-y-4">
+      <div className="mb-3">
+        <input
+          type="text"
+          value={busca}
+          onChange={(e) => { setBusca(e.target.value); setExibirCount(30); }}
+          placeholder="Buscar por nome ou apelido..."
+          className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:border-indigo-500"
+        />
+        {busca && (
+          <div className="text-xs text-gray-500 mt-1">
+            {backupsFiltrados.length} resultado(s) encontrado(s)
+          </div>
+        )}
+      </div>
       <div className="flex gap-2">
         {[
-          { id: "todos", label: `Todos (${backups.length})` },
-          { id: "alertas", label: `Com alertas (${backups.filter((b) => (b.alertas?.length || 0) > 0).length})` },
-          { id: "principais", label: `Principais (${backups.filter((b) => b.marcadoPrincipal).length})` },
+          { id: "todos", label: `Todos (${backupsFiltrados.length})` },
+          { id: "alertas", label: `Com alertas (${backupsFiltrados.filter((b) => (b.alertas?.length || 0) > 0).length})` },
+          { id: "principais", label: `Principais (${backupsFiltrados.filter((b) => b.marcadoPrincipal).length})` },
         ].map((opt) => (
           <button
             key={opt.id}
@@ -540,6 +573,18 @@ function AbaListagem({ refreshTrigger }) {
           );
         })}
       </div>
+
+      {temMaisParaCarregar && (
+        <div className="mt-4 text-center">
+          <button
+            type="button"
+            onClick={() => setExibirCount((n) => n + 30)}
+            className="px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-md text-sm text-gray-700"
+          >
+            Carregar mais 30 ({backupsFiltrados.length - exibirCount} restantes)
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -761,6 +806,7 @@ function AbaGrupos({ refreshTrigger, onChange }) {
 function ModalCriarGrupo({ onClose, onCriado }) {
   const [nome, setNome] = useState("");
   const [backupsDisponiveis, setBackupsDisponiveis] = useState([]);
+  const [buscaModal, setBuscaModal] = useState("");
   const [principalSelecionado, setPrincipalSelecionado] = useState("");
   const [loading, setLoading] = useState(false);
   const [erro, setErro] = useState(null);
@@ -771,6 +817,16 @@ function ModalCriarGrupo({ onClose, onCriado }) {
       setBackupsDisponiveis(livres);
     });
   }, []);
+
+  const backupsFiltrados = useMemo(() => {
+    const t = buscaModal.trim().toLowerCase();
+    if (!t) return backupsDisponiveis;
+    return backupsDisponiveis.filter((b) => {
+      const nome = String(b.nome || "").toLowerCase();
+      const apelido = String(b.apelido || "").toLowerCase();
+      return nome.includes(t) || apelido.includes(t);
+    });
+  }, [backupsDisponiveis, buscaModal]);
 
   const handleCriar = async () => {
     setLoading(true);
@@ -811,24 +867,35 @@ function ModalCriarGrupo({ onClose, onCriado }) {
 
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Produto principal:</label>
-            {backupsDisponiveis.length === 0 ? (
+            {backupsFiltrados.length === 0 && backupsDisponiveis.length > 0 ? (
+              <p className="text-sm text-gray-500 text-center py-4">Nenhum resultado pra "{buscaModal}"</p>
+            ) : backupsDisponiveis.length === 0 ? (
               <div className="text-sm text-gray-500 italic p-2 bg-gray-50 rounded">
                 Nenhum produto livre disponível. Cadastre primeiro na aba "Cadastrar".
               </div>
             ) : (
-              <select
-                value={principalSelecionado}
-                onChange={(e) => setPrincipalSelecionado(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded text-sm"
-                disabled={loading}
-              >
-                <option value="">— Selecione o principal —</option>
-                {backupsDisponiveis.map((b) => (
-                  <option key={b.itemId} value={b.itemId}>
-                    {b.apelido || b.nome} — {b.loja}
-                  </option>
-                ))}
-              </select>
+              <>
+                <input
+                  type="text"
+                  value={buscaModal}
+                  onChange={(e) => setBuscaModal(e.target.value)}
+                  placeholder="Buscar..."
+                  className="w-full px-3 py-2 mb-3 border border-gray-300 rounded-md text-sm"
+                />
+                <select
+                  value={principalSelecionado}
+                  onChange={(e) => setPrincipalSelecionado(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded text-sm"
+                  disabled={loading}
+                >
+                  <option value="">— Selecione o principal —</option>
+                  {backupsFiltrados.map((b) => (
+                    <option key={b.itemId} value={b.itemId}>
+                      {b.apelido || b.nome} — {b.loja}
+                    </option>
+                  ))}
+                </select>
+              </>
             )}
           </div>
 
@@ -869,6 +936,7 @@ function ModalAdicionarBackup({ grupoId, onClose, onAdicionado }) {
   const [loading, setLoading] = useState(false);
   const [erro, setErro] = useState(null);
   const [backupsDisponiveis, setBackupsDisponiveis] = useState([]);
+  const [buscaModalAdd, setBuscaModalAdd] = useState("");
   const [existenteSelecionado, setExistenteSelecionado] = useState("");
 
   useEffect(() => {
@@ -877,6 +945,16 @@ function ModalAdicionarBackup({ grupoId, onClose, onAdicionado }) {
       setBackupsDisponiveis(livres);
     });
   }, []);
+
+  const backupsFiltradosAdd = useMemo(() => {
+    const t = buscaModalAdd.trim().toLowerCase();
+    if (!t) return backupsDisponiveis;
+    return backupsDisponiveis.filter((b) => {
+      const nome = String(b.nome || "").toLowerCase();
+      const apelido = String(b.apelido || "").toLowerCase();
+      return nome.includes(t) || apelido.includes(t);
+    });
+  }, [backupsDisponiveis, buscaModalAdd]);
 
   const handleBuscarLink = async () => {
     setLoading(true);
@@ -1021,18 +1099,29 @@ function ModalAdicionarBackup({ grupoId, onClose, onAdicionado }) {
               </div>
             ) : (
               <>
+                <input
+                  type="text"
+                  value={buscaModalAdd}
+                  onChange={(e) => setBuscaModalAdd(e.target.value)}
+                  placeholder="Buscar..."
+                  className="w-full px-3 py-2 mb-3 border border-gray-300 rounded-md text-sm"
+                />
+                {backupsFiltradosAdd.length === 0 ? (
+                  <p className="text-sm text-gray-500 text-center py-4">Nenhum resultado pra "{buscaModalAdd}"</p>
+                ) : (
                 <select
                   value={existenteSelecionado}
                   onChange={(e) => setExistenteSelecionado(e.target.value)}
                   className="w-full px-3 py-2 border border-gray-300 rounded text-sm"
                 >
                   <option value="">— Selecione um produto —</option>
-                  {backupsDisponiveis.map((b) => (
+                  {backupsFiltradosAdd.map((b) => (
                     <option key={b.itemId} value={b.itemId}>
                       {b.apelido || b.nome} — {b.loja}
                     </option>
                   ))}
                 </select>
+                )}
                 <button
                   type="button"
                   onClick={handleAdicionarExistente}

@@ -1,9 +1,24 @@
-import { addDoc, arrayRemove, arrayUnion, collection, deleteDoc, doc, getDoc, getDocs, query, setDoc, updateDoc, where } from "firebase/firestore";
+import { addDoc, arrayRemove, arrayUnion, collection, deleteDoc, doc, getDoc, getDocs, limit, orderBy, query, setDoc, startAfter, updateDoc, where } from "firebase/firestore";
 import { db } from "../firebase/client";
 
 const LOOKUP_URL = import.meta.env.VITE_LOOKUP_URL;
 const REFRESH_URL = import.meta.env.VITE_REFRESH_URL;
 const SECRET = import.meta.env.VITE_BACKFILL_SECRET;
+
+const CACHE_TTL_MS = 5 * 60 * 1000;
+const _cache = {
+  backups: { data: null, ts: 0 },
+  grupos: { data: null, ts: 0 },
+};
+
+function _cacheValido(entry) {
+  return entry.data !== null && (Date.now() - entry.ts) < CACHE_TTL_MS;
+}
+
+export function invalidarCacheBackups() {
+  _cache.backups = { data: null, ts: 0 };
+  _cache.grupos = { data: null, ts: 0 };
+}
 
 export async function lookupProdutoShopee(url) {
   if (!LOOKUP_URL || !SECRET) {
@@ -51,10 +66,17 @@ export async function salvarBackup(produto, opcoes = {}) {
   };
 
   await setDoc(ref, dados, { merge: true });
+  invalidarCacheBackups();
   return dados;
 }
 
-export async function listarBackups() {
+export async function listarBackups(opcoes = {}) {
+  const { force = false } = opcoes;
+
+  if (!force && _cacheValido(_cache.backups)) {
+    return _cache.backups.data;
+  }
+
   const snap = await getDocs(collection(db, "backup_produtos"));
   const items = [];
   snap.forEach((d) => {
@@ -72,7 +94,57 @@ export async function listarBackups() {
     if (!a.marcadoPrincipal && b.marcadoPrincipal) return 1;
     return (b.cadastrado_em?.getTime() || 0) - (a.cadastrado_em?.getTime() || 0);
   });
+
+  _cache.backups = { data: items, ts: Date.now() };
   return items;
+}
+
+export async function listarBackupsPaginado(pageSize = 30, cursor = null) {
+  const ref = collection(db, "backup_produtos");
+  const q = cursor
+    ? query(ref, orderBy("cadastrado_em", "desc"), startAfter(cursor), limit(pageSize))
+    : query(ref, orderBy("cadastrado_em", "desc"), limit(pageSize));
+
+  const snap = await getDocs(q);
+  const items = [];
+  let lastDoc = null;
+  snap.forEach((d) => {
+    const data = d.data() || {};
+    items.push({
+      docId: d.id,
+      ...data,
+      cadastrado_em: data.cadastrado_em?.toDate?.() || null,
+      ultima_verificacao: data.ultima_verificacao?.toDate?.() || null,
+    });
+    lastDoc = d;
+  });
+
+  return {
+    items,
+    lastDoc,
+    hasMore: items.length === pageSize,
+  };
+}
+
+export async function buscarBackupsPorNome(termo) {
+  const t = String(termo || "").trim().toLowerCase();
+  if (!t) return [];
+
+  if (_cacheValido(_cache.backups)) {
+    const filtrados = _cache.backups.data.filter((b) => {
+      const nome = String(b.nome || "").toLowerCase();
+      const apelido = String(b.apelido || "").toLowerCase();
+      return nome.includes(t) || apelido.includes(t);
+    });
+    if (filtrados.length > 0) return filtrados;
+  }
+
+  const todos = await listarBackups();
+  return todos.filter((b) => {
+    const nome = String(b.nome || "").toLowerCase();
+    const apelido = String(b.apelido || "").toLowerCase();
+    return nome.includes(t) || apelido.includes(t);
+  });
 }
 
 export async function atualizarBackup(itemId) {
@@ -108,6 +180,7 @@ export async function atualizarBackup(itemId) {
 export async function removerBackup(itemId) {
   const ref = doc(db, "backup_produtos", `item_${itemId}`);
   await deleteDoc(ref);
+  invalidarCacheBackups();
 }
 
 export async function editarBackupMeta(itemId, updates) {
@@ -116,6 +189,7 @@ export async function editarBackupMeta(itemId, updates) {
   if (typeof updates.apelido === "string") permitidos.apelido = updates.apelido;
   if (typeof updates.marcadoPrincipal === "boolean") permitidos.marcadoPrincipal = updates.marcadoPrincipal;
   await setDoc(ref, permitidos, { merge: true });
+  invalidarCacheBackups();
 }
 
 export async function buscarSimilaresDaLoja(loja, excluirItemId = null) {
@@ -163,10 +237,17 @@ export async function criarGrupo(nome, principalItemId) {
   const produtoRef = doc(db, "backup_produtos", `item_${principalItemId}`);
   await setDoc(produtoRef, { grupoId: ref.id }, { merge: true });
 
+  invalidarCacheBackups();
   return { docId: ref.id, ...grupoData };
 }
 
-export async function listarGrupos() {
+export async function listarGrupos(opcoes = {}) {
+  const { force = false } = opcoes;
+
+  if (!force && _cacheValido(_cache.grupos)) {
+    return _cache.grupos.data;
+  }
+
   const snap = await getDocs(collection(db, "backup_grupos"));
   const grupos = [];
   snap.forEach((d) => {
@@ -180,6 +261,7 @@ export async function listarGrupos() {
   });
 
   grupos.sort((a, b) => (b.atualizado_em?.getTime() || 0) - (a.atualizado_em?.getTime() || 0));
+  _cache.grupos = { data: grupos, ts: Date.now() };
   return grupos;
 }
 
@@ -204,6 +286,7 @@ export async function adicionarBackupAoGrupo(grupoId, itemId) {
   });
 
   await setDoc(produtoRef, { grupoId }, { merge: true });
+  invalidarCacheBackups();
 }
 
 export async function removerBackupDoGrupo(grupoId, itemId) {
@@ -217,6 +300,7 @@ export async function removerBackupDoGrupo(grupoId, itemId) {
 
   const produtoRef = doc(db, "backup_produtos", `item_${itemId}`);
   await setDoc(produtoRef, { grupoId: null }, { merge: true });
+  invalidarCacheBackups();
 }
 
 export async function trocarPrincipal(grupoId, novoPrincipalItemId, motivo) {
@@ -255,6 +339,7 @@ export async function trocarPrincipal(grupoId, novoPrincipalItemId, motivo) {
     historico: arrayUnion(entrada),
     atualizado_em: new Date(),
   });
+  invalidarCacheBackups();
 }
 
 export async function removerGrupo(grupoId) {
@@ -278,6 +363,7 @@ export async function removerGrupo(grupoId) {
   }
 
   await deleteDoc(grupoRef);
+  invalidarCacheBackups();
 }
 
 export async function carregarGrupoComProdutos(grupoId) {
