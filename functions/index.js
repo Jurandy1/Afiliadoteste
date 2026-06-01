@@ -1797,84 +1797,254 @@ exports.metaDailyTest = onRequest(
     const actId = (id) => (String(id || "").startsWith("act_") ? String(id) : `act_${id}`);
 
     try {
-      const accountId = accountIds[0];
       const fields = [
         "ad_id", "ad_name", "spend", "impressions", "clicks",
         "ctr", "cpc", "date_start", "date_stop",
       ].join(",");
 
-      const params = new URLSearchParams({
-        access_token: token,
-        level: "ad",
-        fields,
-        time_increment: "1",
-        time_range: JSON.stringify({ since, until }),
-        limit: "500",
-      });
+      const resultadoPorConta = [];
 
-      let next = `https://graph.facebook.com/${apiVersion}/${actId(accountId)}/insights?${params}`;
-      const allRows = [];
-      let pages = 0;
-      while (next && pages < 50) {
-        pages++;
-        const r = await fetch(next);
-        const j = await r.json().catch(() => ({}));
-        if (!r.ok || j.error) {
-          res.status(500).json({
-            error: "API Meta retornou erro",
-            detalhe: j?.error?.message || `HTTP ${r.status}`,
-            pagina: pages,
-          });
-          return;
+      for (const accountId of accountIds) {
+        const params = new URLSearchParams({
+          access_token: token,
+          level: "ad",
+          fields,
+          time_increment: "1",
+          time_range: JSON.stringify({ since, until }),
+          limit: "500",
+        });
+
+        const url = `https://graph.facebook.com/${apiVersion}/${actId(accountId)}/insights?${params}`;
+
+        let next = url;
+        const rows = [];
+        let pages = 0;
+        let erro = null;
+
+        while (next && pages < 50) {
+          pages++;
+          const r = await fetch(next);
+          const j = await r.json().catch(() => ({}));
+          if (!r.ok || j.error) {
+            erro = j?.error?.message || `HTTP ${r.status}`;
+            break;
+          }
+          if (Array.isArray(j.data)) rows.push(...j.data);
+          next = j?.paging?.next || null;
         }
-        if (Array.isArray(j.data)) allRows.push(...j.data);
-        next = j?.paging?.next || null;
+
+        const porDia = {};
+        let gastoConta = 0;
+        rows.forEach((row) => {
+          const dia = row.date_start || "?";
+          if (!porDia[dia]) porDia[dia] = { dia, gasto: 0, anuncios: 0 };
+          porDia[dia].gasto += parseFloat(row.spend || 0) || 0;
+          porDia[dia].anuncios += 1;
+          gastoConta += parseFloat(row.spend || 0) || 0;
+        });
+
+        resultadoPorConta.push({
+          conta: accountId,
+          total_linhas: rows.length,
+          paginas: pages,
+          gasto_total: gastoConta.toFixed(2),
+          dias_distintos: Object.keys(porDia).length,
+          erro,
+          resumo_por_dia: Object.values(porDia)
+            .sort((a, b) => a.dia.localeCompare(b.dia))
+            .map((d) => ({ dia: d.dia, gasto: d.gasto.toFixed(2), anuncios: d.anuncios })),
+          amostra: rows.slice(0, 3).map((row) => ({
+            ad_name: row.ad_name,
+            date_start: row.date_start,
+            spend: row.spend,
+            clicks: row.clicks,
+            ctr: row.ctr,
+          })),
+        });
       }
 
-      const porDia = {};
-      let gastoTotal = 0;
-      allRows.forEach((row) => {
-        const dia = row.date_start || "?";
-        if (!porDia[dia]) porDia[dia] = { dia, gasto: 0, anuncios: 0, cliques: 0, impressoes: 0 };
-        porDia[dia].gasto += parseFloat(row.spend || 0) || 0;
-        porDia[dia].anuncios += 1;
-        porDia[dia].cliques += parseInt(row.clicks || 0, 10) || 0;
-        porDia[dia].impressoes += parseInt(row.impressions || 0, 10) || 0;
-        gastoTotal += parseFloat(row.spend || 0) || 0;
-      });
-
-      const diasOrdenados = Object.values(porDia).sort((a, b) => a.dia.localeCompare(b.dia));
-      const amostra = allRows.slice(0, 3).map((row) => ({
-        ad_name: row.ad_name,
-        date_start: row.date_start,
-        date_stop: row.date_stop,
-        spend: row.spend,
-        clicks: row.clicks,
-        ctr: row.ctr,
-      }));
+      const contaComDados = resultadoPorConta.find((c) => c.total_linhas > 0);
 
       res.json({
         success: true,
-        teste: "Meta Diário (time_increment=1)",
-        conta_testada: accountId,
+        teste: "Meta Diário v2 (todas as contas)",
+        total_contas: accountIds.length,
         periodo: { since, until, dias_solicitados: days },
-        total_linhas: allRows.length,
-        paginas: pages,
-        gasto_total_periodo: gastoTotal.toFixed(2),
-        resumo_por_dia: diasOrdenados.map((d) => ({
-          dia: d.dia,
-          gasto: d.gasto.toFixed(2),
-          anuncios_ativos: d.anuncios,
-          cliques: d.cliques,
-          impressoes: d.impressoes,
-        })),
-        amostra_linhas_cruas: amostra,
-        conclusao: allRows.length > 0
-          ? `API retornou ${allRows.length} linhas diárias em ${diasOrdenados.length} dias distintos.`
-          : "API não retornou linhas. Verificar período ou conta.",
+        resultado_por_conta: resultadoPorConta,
+        conclusao: contaComDados
+          ? `Conta ${contaComDados.conta} retornou ${contaComDados.total_linhas} linhas diárias em ${contaComDados.dias_distintos} dias.`
+          : "Nenhuma conta retornou linhas. Verificar período.",
       });
     } catch (err) {
       res.status(500).json({ success: false, error: err?.message || String(err) });
+    }
+  },
+);
+
+async function runMetaDailySync({ daysBack }) {
+  const token = process.env.META_ACCESS_TOKEN || META_ACCESS_TOKEN || "";
+  const accountIds = (process.env.META_AD_ACCOUNT_IDS || "")
+    .split(",")
+    .flatMap((part) => {
+      const m = String(part || "").match(/\d{5,}/g);
+      return m && m[0] ? [m[0]] : [];
+    })
+    .filter(Boolean);
+
+  if (!token) throw new Error("META_ACCESS_TOKEN não configurado");
+  if (!accountIds.length) throw new Error("META_AD_ACCOUNT_IDS não configurado");
+
+  const startedAt = Date.now();
+
+  const days = Math.max(1, Math.min(365, parseInt(daysBack || 0, 10) || 1));
+
+  const hoje = new Date();
+  const fim = new Date(hoje);
+  fim.setDate(fim.getDate() - 1);
+  const inicio = new Date(fim);
+  inicio.setDate(inicio.getDate() - (days - 1));
+
+  const since = inicio.toISOString().slice(0, 10);
+  const until = fim.toISOString().slice(0, 10);
+
+  const fields = [
+    "ad_id",
+    "ad_name",
+    "adset_name",
+    "campaign_name",
+    "spend",
+    "impressions",
+    "clicks",
+    "ctr",
+    "cpc",
+    "reach",
+    "date_start",
+    "date_stop",
+  ].join(",");
+
+  let totalRows = 0;
+  let totalGravados = 0;
+  const errosPorConta = [];
+
+  let batch = db.batch();
+  let count = 0;
+  const flush = async (force = false) => {
+    if (count >= 400 || (force && count > 0)) {
+      await batch.commit();
+      batch = db.batch();
+      count = 0;
+    }
+  };
+
+  for (const accountId of accountIds) {
+    const params = new URLSearchParams({
+      access_token: token,
+      level: "ad",
+      fields,
+      time_increment: "1",
+      time_range: JSON.stringify({ since, until }),
+      limit: "500",
+    });
+    const url = `https://graph.facebook.com/${META_API_VERSION}/${actId(accountId)}/insights?${params}`;
+
+    let rows;
+    try {
+      rows = await metaFetchAll(url);
+    } catch (e) {
+      errosPorConta.push(`Conta ${accountId}: ${e?.message || String(e)}`);
+      continue;
+    }
+
+    totalRows += rows.length;
+
+    for (const row of rows) {
+      const adId = String(row.ad_id || "").trim();
+      const date = String(row.date_start || "").trim();
+      if (!adId || !date) continue;
+
+      const docId = `${adId}_${date}`;
+      const ref = db.collection("meta_ads_daily").doc(docId);
+      batch.set(ref, {
+        adId,
+        data: date,
+        nomeAnuncio: String(row.ad_name || ""),
+        subid: deriveSubId(row.ad_name || ""),
+        conjuntoAnuncios: String(row.adset_name || ""),
+        campanha: String(row.campaign_name || ""),
+        valorUsado: Math.round((parseFloat(row.spend || 0) || 0) * 100) / 100,
+        impressoes: parseInt(row.impressions || 0, 10) || 0,
+        alcance: parseInt(row.reach || 0, 10) || 0,
+        cliquesTotal: parseInt(row.clicks || 0, 10) || 0,
+        ctr: Math.round((parseFloat(row.ctr || 0) || 0) * 10000) / 10000,
+        cpc: Math.round((parseFloat(row.cpc || 0) || 0) * 100) / 100,
+        _accountId: String(accountId),
+        fonte: "meta_api_daily",
+        updatedAt: FieldValue.serverTimestamp(),
+      }, { merge: true });
+      count++;
+      totalGravados++;
+      await flush();
+    }
+  }
+
+  await flush(true);
+
+  console.log(`[metaDaily] fim | range ${since}→${until} | linhas=${totalRows} | gravados=${totalGravados} | ${Date.now() - startedAt}ms`);
+
+  return {
+    range: { since, until, daysBack: days },
+    linhas: totalRows,
+    gravados: totalGravados,
+    erros: errosPorConta,
+  };
+}
+
+exports.metaBackfillDaily = onRequest(
+  {
+    secrets: ["META_SYNC_SECRET", "META_ACCESS_TOKEN", "META_AD_ACCOUNT_IDS"],
+    timeoutSeconds: 300,
+    memory: "512MiB",
+  },
+  async (req, res) => {
+    res.set("Access-Control-Allow-Origin", "*");
+    res.set("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
+    res.set("Access-Control-Allow-Headers", "Authorization, Content-Type");
+
+    if (req.method === "OPTIONS") {
+      res.status(204).send("");
+      return;
+    }
+
+    const secret = (process.env.META_SYNC_SECRET || "").trim();
+    const provided = String(req.get("authorization") || "").trim();
+    if (!secret || provided !== `Bearer ${secret}`) {
+      res.status(401).json({ error: "unauthorized" });
+      return;
+    }
+
+    try {
+      const days = Math.max(1, Math.min(365, parseInt(req.query.days || "90", 10) || 90));
+      const result = await runMetaDailySync({ daysBack: days });
+      res.json({ success: true, ...result });
+    } catch (e) {
+      res.status(500).json({ success: false, error: String(e?.message || e) });
+    }
+  },
+);
+
+exports.metaDailyIncrement = onSchedule(
+  {
+    schedule: "0 5 * * *",
+    timeZone: "America/Sao_Paulo",
+    secrets: ["META_ACCESS_TOKEN", "META_AD_ACCOUNT_IDS"],
+    timeoutSeconds: 120,
+    memory: "256MiB",
+  },
+  async () => {
+    try {
+      await runMetaDailySync({ daysBack: 3 });
+    } catch (e) {
+      console.error("[metaDailyIncrement] falhou:", e?.message || e);
     }
   },
 );

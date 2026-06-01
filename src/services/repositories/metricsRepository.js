@@ -162,6 +162,17 @@ export async function getDashboardKPIsByPeriod(startDate, endDate) {
 
   let gastoMeta = 0;
   let gastoPin = 0;
+  let metaSource = "proporcional";
+
+  try {
+    const diario = await getGastoMetaDiarioByPeriod(startDate, endDate);
+    if (diario) {
+      gastoMeta = Number(diario.gastoMeta || 0);
+      metaSource = "daily";
+    }
+  } catch (err) {
+    console.warn("[KPIsByPeriod] Erro ao buscar gasto Meta diário:", err);
+  }
 
   try {
     const [metaAds, pinterest] = await Promise.all([
@@ -169,13 +180,15 @@ export async function getDashboardKPIsByPeriod(startDate, endDate) {
       getPinterest(null).catch(() => []),
     ]);
 
-    metaAds.forEach((m) => {
-      const itemStart = m.dataInicio || null;
-      const itemEnd = m.dataFim || itemStart;
-      const ratio = calcOverlapRatio(startDate, endDate, itemStart, itemEnd);
-      if (ratio <= 0) return;
-      gastoMeta += (Number(m.valorUsado) || 0) * ratio;
-    });
+    if (metaSource !== "daily") {
+      metaAds.forEach((m) => {
+        const itemStart = m.dataInicio || null;
+        const itemEnd = m.dataFim || itemStart;
+        const ratio = calcOverlapRatio(startDate, endDate, itemStart, itemEnd);
+        if (ratio <= 0) return;
+        gastoMeta += (Number(m.valorUsado) || 0) * ratio;
+      });
+    }
 
     pinterest.forEach((p) => {
       const itemStart = p.dataInicio || p.date || null;
@@ -218,7 +231,7 @@ export async function getDashboardKPIsByPeriod(startDate, endDate) {
     ticketMedio: tot.vendas > 0 ? tot.fat_bruto / tot.vendas : 0,
     lastUpdated: null,
     diasComDados: snap.size,
-    _source: "shopee_daily+meta_proporcional",
+    _source: metaSource === "daily" ? "shopee_daily+meta_daily" : "shopee_daily+meta_proporcional",
   };
 }
 
@@ -798,4 +811,33 @@ export async function getSubIdVendasMap() {
     };
   });
   return map;
+}
+
+export async function getGastoMetaDiarioByPeriod(startDate, endDate) {
+  try {
+    const ref = collection(db, "meta_ads_daily");
+    const q = query(
+      ref,
+      where("data", ">=", startDate),
+      where("data", "<=", endDate),
+    );
+    const snap = await getDocs(q);
+    if (snap.empty) return null;
+
+    let gastoMeta = 0;
+    const diasSet = new Set();
+    snap.forEach((d) => {
+      const x = d.data() || {};
+      gastoMeta += Number(x.valorUsado || 0);
+      if (x.data) diasSet.add(x.data);
+    });
+
+    return {
+      gastoMeta: Math.round(gastoMeta * 100) / 100,
+      diasComDados: diasSet.size,
+    };
+  } catch (err) {
+    console.warn("[getGastoMetaDiarioByPeriod] erro:", err);
+    return null;
+  }
 }
