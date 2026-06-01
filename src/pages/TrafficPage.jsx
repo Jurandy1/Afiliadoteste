@@ -120,14 +120,14 @@ function agentFinanceiro(meta, pins, th) {
   // ── Oportunidades de escala ───────────────────────────────────
   meta
     .filter((m) => {
-      const ctr = ((m.ctr || 0) * 100);
+      const ctr = (m.ctr || 0);
       const cpc = (m.resultados || 0) > 0 ? (m.valorUsado || 0) / (m.resultados || 1) : 999;
       return (m.resultados || 0) > 5 && ctr >= th.ctrBom && cpc <= th.cpcBom;
     })
     .sort((a, b) => (b.resultados || 0) - (a.resultados || 0))
     .slice(0, 2)
     .forEach((m) => {
-      const ctr = ((m.ctr || 0) * 100).toFixed(2);
+      const ctr = (m.ctr || 0).toFixed(2);
       oportunidades.push({
         impacto: "alto",
         titulo: "Anúncio eficiente — escalar orçamento",
@@ -181,10 +181,10 @@ function agentCriativos(meta, pins, th) {
 
   // ── Fadiga de anúncio — CTR muito baixo com muita impressão ──
   meta
-    .filter((m) => (m.impressoes || 0) > 1000 && ((m.ctr || 0) * 100) < th.ctrFadiga)
+    .filter((m) => (m.impressoes || 0) > 1000 && (m.ctr || 0) < th.ctrFadiga)
     .slice(0, 3)
     .forEach((m) => {
-      const ctr = ((m.ctr || 0) * 100).toFixed(2);
+      const ctr = (m.ctr || 0).toFixed(2);
       alertas.push({
         nivel: "alto",
         categoria: "criativo",
@@ -266,7 +266,7 @@ function agentAnomalias(meta, pins, th) {
   // ── Detecção estatística de CTR outliers (2σ) ────────────────
   const ctrs = meta
     .filter((m) => (m.impressoes || 0) > 200)
-    .map((m) => (m.ctr || 0) * 100);
+    .map((m) => (m.ctr || 0));
 
   if (ctrs.length >= 3) {
     const { media, desvio } = mediaDesvio(ctrs);
@@ -274,17 +274,17 @@ function agentAnomalias(meta, pins, th) {
 
     meta
       .filter((m) => {
-        const ctr = (m.ctr || 0) * 100;
+        const ctr = (m.ctr || 0);
         return (m.impressoes || 0) > 200 && ctr < limiteInf && (m.valorUsado || 0) > 5;
       })
       .slice(0, 2)
       .forEach((m) => {
-        const ctr = ((m.ctr || 0) * 100).toFixed(2);
+        const ctr = (m.ctr || 0).toFixed(2);
         alertas.push({
           nivel: "alto",
           categoria: "anomalia",
           titulo: "CTR colapso — abaixo de 1.5σ da média",
-          descricao: `"${m.nomeAnuncio}" tem CTR ${ctr}% vs média da conta ${media.toFixed(2)}%. Distância: ${((media - (m.ctr || 0) * 100) / (desvio || 1)).toFixed(1)} desvios.`,
+          descricao: `"${m.nomeAnuncio}" tem CTR ${ctr}% vs média da conta ${media.toFixed(2)}%. Distância: ${((media - (m.ctr || 0)) / (desvio || 1)).toFixed(1)} desvios.`,
           acao: "Pausar e substituir criativo. Verificar se o público não está saturado.",
         });
       });
@@ -1360,7 +1360,7 @@ export default function TrafficPage() {
               </thead>
               <tbody className="divide-y divide-gray-50">
                 {metaFiltered.map((m) => {
-                  const ctr  = ((m.ctr || 0) * 100);
+                  const ctr  = (m.ctr || 0);
                   const cpc  = (m.resultados || 0) > 0 ? (m.valorUsado || 0) / (m.resultados || 1) : 0;
                   const cpm  = (m.impressoes || 0) > 0 ? ((m.valorUsado || 0) / (m.impressoes || 1)) * 1000 : 0;
                   const ctrC = ctr>=thresholds.ctrBom?"#16A34A":ctr>=thresholds.ctrOk?"#D97706":"#DC2626";
