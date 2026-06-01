@@ -1740,3 +1740,141 @@ function gerarConclusao(r) {
 
   return conclusoes;
 }
+
+exports.metaDailyTest = onRequest(
+  {
+    secrets: ["META_SYNC_SECRET", "META_ACCESS_TOKEN", "META_AD_ACCOUNT_IDS"],
+    timeoutSeconds: 120,
+    memory: "256MiB",
+  },
+  async (req, res) => {
+    res.set("Access-Control-Allow-Origin", "*");
+    res.set("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
+    res.set("Access-Control-Allow-Headers", "Authorization, Content-Type");
+
+    if (req.method === "OPTIONS") {
+      res.status(204).send("");
+      return;
+    }
+
+    const secret = (process.env.META_SYNC_SECRET || "").trim();
+    const provided = String(req.get("authorization") || "").trim();
+    if (!secret || provided !== `Bearer ${secret}`) {
+      res.status(401).json({ error: "unauthorized" });
+      return;
+    }
+
+    const token = process.env.META_ACCESS_TOKEN || "";
+    const accountIds = (process.env.META_AD_ACCOUNT_IDS || "")
+      .split(",")
+      .flatMap((part) => {
+        const m = String(part || "").match(/\d{5,}/g);
+        return m && m[0] ? [m[0]] : [];
+      })
+      .filter(Boolean);
+
+    if (!token) {
+      res.status(500).json({ error: "META_ACCESS_TOKEN não configurado" });
+      return;
+    }
+    if (!accountIds.length) {
+      res.status(500).json({ error: "META_AD_ACCOUNT_IDS não configurado" });
+      return;
+    }
+
+    const apiVersion = process.env.META_API_VERSION || "v19.0";
+    const days = Math.max(1, Math.min(90, parseInt(req.query.days || "7", 10) || 7));
+
+    const hoje = new Date();
+    const fim = new Date(hoje);
+    fim.setDate(fim.getDate() - 1);
+    const inicio = new Date(fim);
+    inicio.setDate(inicio.getDate() - (days - 1));
+
+    const since = inicio.toISOString().slice(0, 10);
+    const until = fim.toISOString().slice(0, 10);
+
+    const actId = (id) => (String(id || "").startsWith("act_") ? String(id) : `act_${id}`);
+
+    try {
+      const accountId = accountIds[0];
+      const fields = [
+        "ad_id", "ad_name", "spend", "impressions", "clicks",
+        "ctr", "cpc", "date_start", "date_stop",
+      ].join(",");
+
+      const params = new URLSearchParams({
+        access_token: token,
+        level: "ad",
+        fields,
+        time_increment: "1",
+        time_range: JSON.stringify({ since, until }),
+        limit: "500",
+      });
+
+      let next = `https://graph.facebook.com/${apiVersion}/${actId(accountId)}/insights?${params}`;
+      const allRows = [];
+      let pages = 0;
+      while (next && pages < 50) {
+        pages++;
+        const r = await fetch(next);
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || j.error) {
+          res.status(500).json({
+            error: "API Meta retornou erro",
+            detalhe: j?.error?.message || `HTTP ${r.status}`,
+            pagina: pages,
+          });
+          return;
+        }
+        if (Array.isArray(j.data)) allRows.push(...j.data);
+        next = j?.paging?.next || null;
+      }
+
+      const porDia = {};
+      let gastoTotal = 0;
+      allRows.forEach((row) => {
+        const dia = row.date_start || "?";
+        if (!porDia[dia]) porDia[dia] = { dia, gasto: 0, anuncios: 0, cliques: 0, impressoes: 0 };
+        porDia[dia].gasto += parseFloat(row.spend || 0) || 0;
+        porDia[dia].anuncios += 1;
+        porDia[dia].cliques += parseInt(row.clicks || 0, 10) || 0;
+        porDia[dia].impressoes += parseInt(row.impressions || 0, 10) || 0;
+        gastoTotal += parseFloat(row.spend || 0) || 0;
+      });
+
+      const diasOrdenados = Object.values(porDia).sort((a, b) => a.dia.localeCompare(b.dia));
+      const amostra = allRows.slice(0, 3).map((row) => ({
+        ad_name: row.ad_name,
+        date_start: row.date_start,
+        date_stop: row.date_stop,
+        spend: row.spend,
+        clicks: row.clicks,
+        ctr: row.ctr,
+      }));
+
+      res.json({
+        success: true,
+        teste: "Meta Diário (time_increment=1)",
+        conta_testada: accountId,
+        periodo: { since, until, dias_solicitados: days },
+        total_linhas: allRows.length,
+        paginas: pages,
+        gasto_total_periodo: gastoTotal.toFixed(2),
+        resumo_por_dia: diasOrdenados.map((d) => ({
+          dia: d.dia,
+          gasto: d.gasto.toFixed(2),
+          anuncios_ativos: d.anuncios,
+          cliques: d.cliques,
+          impressoes: d.impressoes,
+        })),
+        amostra_linhas_cruas: amostra,
+        conclusao: allRows.length > 0
+          ? `API retornou ${allRows.length} linhas diárias em ${diasOrdenados.length} dias distintos.`
+          : "API não retornou linhas. Verificar período ou conta.",
+      });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err?.message || String(err) });
+    }
+  },
+);
