@@ -792,7 +792,49 @@ async function recalcularSumario(db) {
   return sumario;
 }
 
-async function runShopeeSync({ startTs, endTs, label, updateCursor = false }) {
+async function getNovasConversoes(db, allNodes) {
+  const conversionIdSet = new Set();
+  for (const node of allNodes || []) {
+    const cid = String(node?.conversionId || "").trim();
+    if (cid) conversionIdSet.add(cid);
+  }
+
+  const conversionIds = [...conversionIdSet];
+  const conversoesJaProcessadas = new Set();
+
+  if (conversionIds.length === 0) {
+    return { conversionIds: [], conversoesJaProcessadas, novosNodes: [], novosConversionIds: [] };
+  }
+
+  for (let i = 0; i < conversionIds.length; i += 10) {
+    const chunk = conversionIds.slice(i, i + 10);
+    const snap = await db.collection("conversoes_processadas")
+      .where(admin.firestore.FieldPath.documentId(), "in", chunk)
+      .get();
+    snap.forEach((doc) => conversoesJaProcessadas.add(doc.id));
+  }
+
+  const novosNodes = (allNodes || []).filter((n) => {
+    const cid = String(n?.conversionId || "").trim();
+    if (!cid) return false;
+    return !conversoesJaProcessadas.has(cid);
+  });
+
+  const novosConversionIdSet = new Set();
+  for (const node of novosNodes) {
+    const cid = String(node?.conversionId || "").trim();
+    if (cid) novosConversionIdSet.add(cid);
+  }
+
+  return {
+    conversionIds,
+    conversoesJaProcessadas,
+    novosNodes,
+    novosConversionIds: [...novosConversionIdSet],
+  };
+}
+
+async function runShopeeSync({ startTs, endTs, label, updateCursor = false, forceReplace = false }) {
   const startedAt = Date.now();
   const importRef = db.collection("importacoes").doc();
   const importacaoId = importRef.id;
@@ -832,17 +874,98 @@ async function runShopeeSync({ startTs, endTs, label, updateCursor = false }) {
   }
 
   let subIdsGravados = 0;
-  for (const [id, row] of Object.entries(subIdMap)) {
-    const ref = db.collection("subid_vendas").doc(id);
-    batch.set(ref, {
-      ...row,
-      fonte: "shopee_api_backend",
-      importacaoId,
-      updatedAt: FieldValue.serverTimestamp(),
-      importadoEm: FieldValue.serverTimestamp(),
-    }, { merge: true });
-    count++; subIdsGravados++;
-    await flush();
+  if (forceReplace) {
+    for (const [id, row] of Object.entries(subIdMap)) {
+      const ref = db.collection("subid_vendas").doc(id);
+      batch.set(ref, {
+        ...row,
+        fonte: "shopee_api_backend",
+        importacaoId,
+        updatedAt: FieldValue.serverTimestamp(),
+        importadoEm: FieldValue.serverTimestamp(),
+      }, { merge: true });
+      count++; subIdsGravados++;
+      await flush();
+    }
+  } else {
+    const { conversionIds, conversoesJaProcessadas, novosNodes, novosConversionIds } = await getNovasConversoes(db, allNodes);
+    console.log(`[shopee] dedup: ${conversoesJaProcessadas.size} conversões já processadas de ${conversionIds.length} totais`);
+
+    const subIdMapNovo = {};
+    for (const node of novosNodes) {
+      const orders = node.orders || [];
+      const baseSubIdRaw = node.utmContent || "";
+      const baseSubIdNorm = shopeeNormalizeSubId(baseSubIdRaw);
+      const subKey = baseSubIdNorm || "missing_subid";
+
+      for (const ord of orders) {
+        const items = ord.items || [];
+        const status = shopeeClassifyStatus(ord.orderStatus || node.conversionStatus);
+        const isCancel = status === "cancelada";
+
+        for (const it of items) {
+          const qty = parseInt(it.qty, 10) || 1;
+          const price = parseFloat(it.itemPrice || "0") || 0;
+          const actual = parseFloat(it.actualAmount || "0") || 0;
+          const refund = parseFloat(it.refundAmount || "0") || 0;
+          const gmv = (actual > 0 ? actual : price * qty) - refund;
+          const commission = parseFloat(it.itemCommission || it.itemTotalCommission || "0") || 0;
+          const comissaoEstimada = parseFloat(it.itemTotalCommission || it.itemCommission || "0") || 0;
+          const isDireta = shopeeIsDireta(it.attributionType);
+          const isIndireta = isDireta ? 0 : 1;
+
+          if (!subIdMapNovo[subKey]) {
+            subIdMapNovo[subKey] = {
+              subid: baseSubIdNorm || "",
+              comissoes: 0,
+              comissoes_estimadas: 0,
+              faturamento: 0,
+              vendas_diretas: 0,
+              vendas_indiretas: 0,
+              qtd_itens: 0,
+            };
+          }
+
+          subIdMapNovo[subKey].comissoes_estimadas += comissaoEstimada;
+          if (isCancel) continue;
+
+          subIdMapNovo[subKey].comissoes += commission;
+          subIdMapNovo[subKey].faturamento += gmv;
+          subIdMapNovo[subKey].vendas_diretas += isDireta;
+          subIdMapNovo[subKey].vendas_indiretas += isIndireta;
+          subIdMapNovo[subKey].qtd_itens += qty;
+        }
+      }
+    }
+
+    for (const [id, delta] of Object.entries(subIdMapNovo)) {
+      const ref = db.collection("subid_vendas").doc(id);
+      batch.set(ref, {
+        subid: delta.subid,
+        comissoes: FieldValue.increment(delta.comissoes),
+        comissoes_estimadas: FieldValue.increment(delta.comissoes_estimadas),
+        faturamento: FieldValue.increment(delta.faturamento),
+        vendas_diretas: FieldValue.increment(delta.vendas_diretas),
+        vendas_indiretas: FieldValue.increment(delta.vendas_indiretas),
+        qtd_itens: FieldValue.increment(delta.qtd_itens),
+        fonte: "shopee_api_backend",
+        importacaoId,
+        updatedAt: FieldValue.serverTimestamp(),
+        importadoEm: FieldValue.serverTimestamp(),
+      }, { merge: true });
+      count++; subIdsGravados++;
+      await flush();
+    }
+
+    for (const cid of novosConversionIds) {
+      const ref = db.collection("conversoes_processadas").doc(cid);
+      batch.set(ref, {
+        processadoEm: FieldValue.serverTimestamp(),
+        importacaoId,
+      }, { merge: true });
+      count++;
+      await flush();
+    }
   }
 
   if (!(allNodes.length === 0 && label === "incremental_cursor")) {
@@ -997,11 +1120,13 @@ exports.shopeeBackfillNow = onRequest(
       const todayOnly = req.query.todayOnly === "1";
       const now = Math.floor(Date.now() / 1000);
       const start = now - days * 86400;
+      const isFullBackfill = !todayOnly;
       const result = await runShopeeSync({
         startTs: start,
         endTs: now,
         label: todayOnly ? "backfill_today_only" : `backfill_${days}d`,
         updateCursor: true, // backfill define o cursor inicial
+        forceReplace: isFullBackfill,
       });
       res.json(result);
     } catch (e) {
