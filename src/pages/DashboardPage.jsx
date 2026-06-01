@@ -1117,24 +1117,24 @@ export default function DashboardPage() {
               </label>
             </div>
           </div>
-          <div className="overflow-x-auto">
+          <div className="overflow-auto max-h-[500px]">
             <table className="w-full text-xs">
-              <thead>
+              <thead className="sticky top-0 z-10">
                 <tr className="bg-gray-50 text-gray-500 uppercase text-[10px] tracking-wider">
-                  <th className="text-left px-3 py-2">SubID</th>
-                  {subCols.comissoes && <th className="px-2 py-2 text-center">Comissão</th>}
-                  {subCols.gasto && <th className="px-2 py-2 text-center">Gasto</th>}
-                  {subCols.lucro && <th className="px-2 py-2 text-center">Lucro</th>}
-                  {subCols.roi && <th className="px-2 py-2 text-center">ROI</th>}
-                  {subCols.faturamento && <th className="px-2 py-2 text-center">Faturamento</th>}
-                  {subCols.ticket && <th className="px-2 py-2 text-center">Ticket</th>}
-                  {subCols.total_vendas && <th className="px-2 py-2 text-center">Vendas</th>}
-                  {subCols.vendas_diretas && <th className="px-2 py-2 text-center">Diretas</th>}
-                  {subCols.vendas_indiretas && <th className="px-2 py-2 text-center">Indiretas</th>}
-                  {subCols.qtd_itens && <th className="px-2 py-2 text-center">Itens</th>}
-                  {subCols.cliques_anuncio && <th className="px-2 py-2 text-center">Cliques Ads</th>}
-                  {subCols.cliques_shopee && <th className="px-2 py-2 text-center">Cliques Shopee</th>}
-                  {subCols.batimento && <th className="px-2 py-2 text-center">% Bat.</th>}
+                  <th className="text-left px-3 py-2 bg-gray-50">SubID</th>
+                  {subCols.comissoes && <th className="px-2 py-2 text-center bg-gray-50">Comissão</th>}
+                  {subCols.gasto && <th className="px-2 py-2 text-center bg-gray-50">Gasto</th>}
+                  {subCols.lucro && <th className="px-2 py-2 text-center bg-gray-50">Lucro</th>}
+                  {subCols.roi && <th className="px-2 py-2 text-center bg-gray-50">ROI</th>}
+                  {subCols.faturamento && <th className="px-2 py-2 text-center bg-gray-50">Faturamento</th>}
+                  {subCols.ticket && <th className="px-2 py-2 text-center bg-gray-50">Ticket</th>}
+                  {subCols.total_vendas && <th className="px-2 py-2 text-center bg-gray-50">Vendas</th>}
+                  {subCols.vendas_diretas && <th className="px-2 py-2 text-center bg-gray-50">Diretas</th>}
+                  {subCols.vendas_indiretas && <th className="px-2 py-2 text-center bg-gray-50">Indiretas</th>}
+                  {subCols.qtd_itens && <th className="px-2 py-2 text-center bg-gray-50">Itens</th>}
+                  {subCols.cliques_anuncio && <th className="px-2 py-2 text-center bg-gray-50">Cliques Ads</th>}
+                  {subCols.cliques_shopee && <th className="px-2 py-2 text-center bg-gray-50">Cliques Shopee</th>}
+                  {subCols.batimento && <th className="px-2 py-2 text-center bg-gray-50">% Bat.</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
