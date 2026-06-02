@@ -13,18 +13,45 @@ export default function AlertasBell() {
   const dropdownRef = useRef(null);
 
   useEffect(() => {
-    const q = query(
-      collection(db, "garimpo_alertas"),
+    const colRef = collection(db, "garimpo_alertas");
+
+    const primaryQuery = query(
+      colRef,
       where("arquivado", "==", false),
       orderBy("createdAt", "desc"),
-      limit(40)
+      limit(40),
     );
-    const unsub = onSnapshot(q, (snap) => {
+
+    const fallbackQuery = query(
+      colRef,
+      where("arquivado", "==", false),
+      limit(40),
+    );
+
+    const handleSnap = (snap) => {
       const list = [];
       snap.forEach((d) => list.push({ id: d.id, ...d.data() }));
+      list.sort((a, b) => {
+        const ta = a?.createdAt?.toMillis ? a.createdAt.toMillis() : (a?.createdAt?.seconds ? a.createdAt.seconds * 1000 : 0);
+        const tb = b?.createdAt?.toMillis ? b.createdAt.toMillis() : (b?.createdAt?.seconds ? b.createdAt.seconds * 1000 : 0);
+        return tb - ta;
+      });
       setAlertas(list);
+    };
+
+    let unsub = onSnapshot(primaryQuery, handleSnap, (err) => {
+      const msg = String(err?.message || "");
+      if (err?.code === "failed-precondition" || msg.includes("requires an index")) {
+        try { unsub(); } catch {}
+        unsub = onSnapshot(fallbackQuery, handleSnap, (e2) => {
+          console.warn("[garimpo_alertas] snapshot falhou:", e2?.code, e2?.message);
+        });
+        return;
+      }
+      console.warn("[garimpo_alertas] snapshot falhou:", err?.code, err?.message);
     });
-    return () => unsub();
+
+    return () => { try { unsub(); } catch {} };
   }, []);
 
   useEffect(() => {
