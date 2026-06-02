@@ -921,3 +921,88 @@ export async function getSubIdsByPeriod(startDate, endDate) {
 
   return Object.values(subIdMap);
 }
+
+export async function getProdutosByPeriod(startDate, endDate) {
+  if (!startDate || !endDate) return [];
+
+  const formataData = (d) => {
+    if (typeof d === "string" && d.length === 10) return d;
+    const dt = new Date(d);
+    const ano = dt.getFullYear();
+    const mes = String(dt.getMonth() + 1).padStart(2, "0");
+    const dia = String(dt.getDate()).padStart(2, "0");
+    return `${ano}-${mes}-${dia}`;
+  };
+
+  const startStr = formataData(startDate);
+  const endStr = formataData(endDate);
+
+  const q = query(
+    collection(db, "produto_daily"),
+    where("data", ">=", startStr),
+    where("data", "<=", endStr),
+  );
+  const snapshot = await getDocs(q);
+  const produtoMap = {};
+
+  snapshot.forEach((docSnap) => {
+    const d = docSnap.data() || {};
+    const pid = String(d.produto_id || "").trim() || "desconhecido";
+    if (!produtoMap[pid]) {
+      produtoMap[pid] = {
+        produto_id: pid,
+        nome: d.nome || "Produto",
+        comissoes: 0,
+        comissoes_pendentes: 0,
+        qtd_itens: 0,
+        faturamento: 0,
+      };
+    }
+    produtoMap[pid].comissoes += (d.comissoes || 0);
+    produtoMap[pid].comissoes_pendentes += (d.comissoes_pendentes || 0);
+    produtoMap[pid].qtd_itens += (d.qtd_itens || 0);
+    produtoMap[pid].faturamento += (d.faturamento || 0);
+  });
+
+  return Object.values(produtoMap).sort((a, b) => (b.comissoes || 0) - (a.comissoes || 0));
+}
+
+export async function getPerdasByPeriod(startDate, endDate) {
+  if (!startDate || !endDate) return { countPerdas: 0, totalFatPerdido: 0, totalComissaoPerdida: 0 };
+
+  const formataData = (d) => {
+    if (typeof d === "string" && d.length === 10) return d;
+    const dt = new Date(d);
+    const ano = dt.getFullYear();
+    const mes = String(dt.getMonth() + 1).padStart(2, "0");
+    const dia = String(dt.getDate()).padStart(2, "0");
+    return `${ano}-${mes}-${dia}`;
+  };
+
+  const startStr = formataData(startDate);
+  const endStr = formataData(endDate);
+
+  const q = query(
+    collection(db, "log_perdas"),
+    where("data", ">=", startStr),
+    where("data", "<=", endStr),
+  );
+  const snapshot = await getDocs(q);
+
+  let countPerdas = 0;
+  let totalFatPerdido = 0;
+  let totalComissaoPerdida = 0;
+
+  snapshot.forEach((docSnap) => {
+    const d = docSnap.data() || {};
+    countPerdas += 1;
+    totalFatPerdido += Number(d.faturamento_perdido || 0);
+    totalComissaoPerdida += Number(d.comissao_perdida || 0);
+  });
+
+  return {
+    countPerdas,
+    totalFatPerdido: Math.round(totalFatPerdido * 100) / 100,
+    totalComissaoPerdida: Math.round(totalComissaoPerdida * 100) / 100,
+  };
+}

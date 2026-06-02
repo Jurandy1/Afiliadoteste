@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useMemo, useState } from "react";
 import { collection, getDocs } from "firebase/firestore";
 import { BarChart3, DollarSign, ShoppingBag, Target, TrendingUp, Ticket } from "lucide-react";
-import { buscarProdutos, dispararBackfillHoje, getComparacaoMensal, getDashboardData, getDashboardKPIs, getDashboardKPIsByPeriod, getProdutosPagina, getResumoSemana, getSubIdPanelData, getSubIdsByPeriod, getUltimaAtualizacaoHoje } from "../services/repositories/metricsRepository";
+import { buscarProdutos, dispararBackfillHoje, getComparacaoMensal, getDashboardData, getDashboardKPIs, getDashboardKPIsByPeriod, getPerdasByPeriod, getProdutosByPeriod, getProdutosPagina, getResumoSemana, getSubIdPanelData, getSubIdsByPeriod, getUltimaAtualizacaoHoje } from "../services/repositories/metricsRepository";
 import { filterProdutos, sortProdutos } from "../domain/attribution/productFilters";
 import { paginate, DEFAULT_PAGE_SIZE } from "../utils/pagination";
 import { fmt, fmtPct, fmtRoas, fmtNum } from "../utils/formatters";
@@ -261,10 +261,12 @@ export default function DashboardPage() {
       const dataInicioBusca = (range && range.startDate) ? range.startDate : "2020-01-01";
       const dataFimBusca = (range && range.endDate) ? range.endDate : "2030-12-31";
 
-      const [kpisFromSumario, produtosPage, subIdsFiltrados] = await Promise.all([
+      const [kpisFromSumario, produtosPage, subIdsFiltrados, produtosPeriodo, perdas] = await Promise.all([
         getDashboardKPIsByPeriod(dataInicioBusca, dataFimBusca).catch(() => null),
         getProdutosPagina(50).catch(() => ({ produtos: [], lastDoc: null, hasMore: false })),
         getSubIdsByPeriod(dataInicioBusca, dataFimBusca).catch(() => []),
+        getProdutosByPeriod(dataInicioBusca, dataFimBusca).catch(() => []),
+        getPerdasByPeriod(dataInicioBusca, dataFimBusca).catch(() => ({ countPerdas: 0, totalFatPerdido: 0, totalComissaoPerdida: 0 })),
       ]);
 
       if (abortRef.current) return;
@@ -280,9 +282,9 @@ export default function DashboardPage() {
       }
 
       const produtos = produtosPage?.produtos || [];
-      const ranking = [...produtos]
-        .sort((a, b) => (b.comissao_concluida || 0) - (a.comissao_concluida || 0))
-        .slice(0, 10);
+      const ranking = (produtosPeriodo || [])
+        .slice(0, 10)
+        .map((p) => ({ nome: p.nome, comissao_concluida: p.comissoes }));
 
       setData({
         kpis: {
@@ -324,6 +326,7 @@ export default function DashboardPage() {
         subIdDiagnostics: { totalRows: subIdsFiltrados.length, isReliable: true, source: "subid_daily" },
         operationalAlerts: [],
         chartData: kpisFromSumario.historicoDiario || [],
+        perdas,
       });
 
       setProdCursor({ lastDoc: produtosPage?.lastDoc || null, hasMore: !!produtosPage?.hasMore });
@@ -764,14 +767,25 @@ export default function DashboardPage() {
           trend={`${fmtNum(kpis.vendasDiretas)}D / ${fmtNum(kpis.vendasIndiretas)}I`}
           up
         />
-        <KPICard
-          icon={<ShoppingBag size={18} />}
-          iconBg="bg-amber-50 text-amber-700"
-          label="Pedidos"
-          value={fmtNum(kpis.totalPedidos || 0)}
-          trend="Ordens"
-          up
-        />
+        <div className="flex gap-5">
+          <div className="bg-white rounded-lg border border-gray-200 p-3.5 flex-1">
+            <div className="text-[10px] text-gray-400 uppercase tracking-wide font-medium">Pedidos</div>
+            <div className="text-2xl font-semibold text-gray-900 mt-1">{fmtNum(kpis.totalPedidos || 0)}</div>
+            <div className="text-[11px] mt-1 text-gray-400">Ordens</div>
+          </div>
+          <div
+            className="bg-white rounded-lg border border-gray-200 p-3.5 text-center flex-1"
+            style={{ backgroundColor: "#fff0f0", border: "1px solid #ffcccc" }}
+          >
+            <div style={{ color: "#d9534f", fontSize: "0.9em" }}>Não Liquidados</div>
+            <div className="text-2xl font-semibold mt-1" style={{ color: "#d9534f" }}>
+              {fmtNum(data?.perdas?.countPerdas || 0)}
+            </div>
+            <div style={{ fontSize: "0.75em" }}>
+              R$ {(data?.perdas?.totalFatPerdido || 0).toFixed(2)} Perdidos
+            </div>
+          </div>
+        </div>
         <KPICard
           icon={<Ticket size={18} />}
           iconBg="bg-rose-50 text-rose-600"
@@ -1238,7 +1252,7 @@ export default function DashboardPage() {
           height={Math.min(320, 40 + ranking.length * 28)}
           data={{
             labels: ranking.map((r) => r.nome?.substring(0, 32) || "—"),
-            datasets: [{ data: ranking.map((r) => Math.round(r.comissao_concluida || 0)), backgroundColor: "#4F46E5", borderRadius: 4 }],
+            datasets: [{ data: ranking.map((r) => Math.round(r.comissao_concluida || r.comissoes || 0)), backgroundColor: "#4F46E5", borderRadius: 4 }],
           }}
           options={{
             indexAxis: "y",

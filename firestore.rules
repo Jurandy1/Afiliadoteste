@@ -128,6 +128,16 @@ service cloud.firestore {
       allow write: if false;  // só backend (Admin SDK) escreve
     }
 
+    match /produto_daily/{docId} {
+      allow read: if true;
+      allow write: if false;  // só backend (Admin SDK) escreve
+    }
+
+    match /log_perdas/{docId} {
+      allow read: if true;
+      allow write: if false;  // só backend (Admin SDK) escreve
+    }
+
     // ── Sync State (cursor do incremental) ──────────────────────
     match /sync_state/{stateId} {
       allow read: if true;

@@ -621,6 +621,9 @@ function shopeeAggregate(nodes) {
 function agruparPorData(nodes) {
   const dayMap = {};
   const subIdDayMap = {};
+  const produtoDayMap = {};
+  const perdas = [];
+  const statusIgnorados = ["CANCELLED", "CANCELED", "FAILED", "FRAUD", "PENDING_PAYMENT", "EXPIRED", "UNPAID"];
 
   for (const node of nodes) {
     const orders = node.orders || [];
@@ -635,9 +638,29 @@ function agruparPorData(nodes) {
       const date = dataHMBrasilia.toISOString().split("T")[0];
 
       const items = ord.items || [];
-      const status = shopeeClassifyStatus(
-        ord.orderStatus || node.conversionStatus,
-      );
+      const statusPedidoRaw = ord.orderStatus || node.conversionStatus || "";
+      const statusPedidoUpper = String(statusPedidoRaw).toUpperCase();
+      const isIgnorado = statusIgnorados.some((s) => statusPedidoUpper.includes(s));
+      if (isIgnorado) {
+        for (const it of items) {
+          const qty = parseInt(it.qty, 10) || 1;
+          const price = parseFloat(it.itemPrice || "0") || 0;
+          const actual = parseFloat(it.actualAmount || "0") || 0;
+          const refund = parseFloat(it.refundAmount || "0") || 0;
+          const gmv = (actual > 0 ? actual : price * qty) - refund;
+          const comissaoEstimada = parseFloat(it.itemTotalCommission || it.itemCommission || "0") || 0;
+          perdas.push({
+            data: date,
+            status: statusPedidoRaw,
+            faturamento_perdido: parseFloat(gmv) || 0,
+            comissao_perdida: parseFloat(comissaoEstimada) || 0,
+            timestamp: Date.now(),
+          });
+        }
+        continue;
+      }
+
+      const status = shopeeClassifyStatus(statusPedidoRaw);
       const isCancel = status === "cancelada";
 
       if (!dayMap[date]) {
@@ -716,11 +739,29 @@ function agruparPorData(nodes) {
         s.comissoes_estimadas += comissaoEstimada;
         s.vendas_diretas += isDireta;
         s.vendas_indiretas += isIndireta;
+
+        const produtoId = String(it.itemId || "desconhecido").trim() || "desconhecido";
+        const produtoDocId = `${date}_${produtoId}`;
+        if (!produtoDayMap[produtoDocId]) {
+          produtoDayMap[produtoDocId] = {
+            data: date,
+            produto_id: produtoId,
+            nome: String(it.itemName || "Produto"),
+            comissoes: 0,
+            comissoes_pendentes: 0,
+            qtd_itens: 0,
+            faturamento: 0,
+          };
+        }
+        produtoDayMap[produtoDocId].comissoes += comissaoReal;
+        produtoDayMap[produtoDocId].comissoes_pendentes += isCancel ? 0 : Math.max(0, comissaoEstimada - comissaoReal);
+        produtoDayMap[produtoDocId].qtd_itens += qty;
+        produtoDayMap[produtoDocId].faturamento += faturamentoReal;
       }
     }
   }
 
-  return { dayMap, subIdDayMap };
+  return { dayMap, subIdDayMap, produtoDayMap, perdas };
 }
 
 function formatDateBRTYYYYMMDDNow() {
@@ -801,6 +842,56 @@ async function gravarSubIdDaily(subIdDayMap, batch, flush, state, todayOnly = fa
       });
     }
 
+    state.count++;
+    gravados++;
+    await flush();
+  }
+
+  return gravados;
+}
+
+async function gravarProdutoDaily(produtoDayMap, batch, flush, state, todayOnly = false, mode = "replace") {
+  let gravados = 0;
+  const hojeBRT = formatDateBRTYYYYMMDDNow();
+
+  for (const [docId, totais] of Object.entries(produtoDayMap)) {
+    if (todayOnly && totais.data !== hojeBRT) continue;
+
+    const ref = db.collection("produto_daily").doc(docId);
+    if (mode === "increment") {
+      batch.set(ref, {
+        data: totais.data,
+        produto_id: totais.produto_id,
+        nome: totais.nome,
+        comissoes: FieldValue.increment(Number(totais.comissoes || 0)),
+        comissoes_pendentes: FieldValue.increment(Number(totais.comissoes_pendentes || 0)),
+        qtd_itens: FieldValue.increment(Number(totais.qtd_itens || 0)),
+        faturamento: FieldValue.increment(Number(totais.faturamento || 0)),
+        updatedAt: FieldValue.serverTimestamp(),
+      }, { merge: true });
+    } else {
+      batch.set(ref, {
+        ...totais,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+    }
+    state.count++;
+    gravados++;
+    await flush();
+  }
+
+  return gravados;
+}
+
+async function gravarLogPerdas(perdas, batch, flush, state, todayOnly = false) {
+  if (!perdas || perdas.length === 0) return 0;
+  let gravados = 0;
+  const hojeBRT = formatDateBRTYYYYMMDDNow();
+
+  for (const row of perdas) {
+    if (todayOnly && row.data !== hojeBRT) continue;
+    const ref = db.collection("log_perdas").doc();
+    batch.set(ref, row);
     state.count++;
     gravados++;
     await flush();
@@ -931,7 +1022,7 @@ async function runShopeeSync({ startTs, endTs, label, updateCursor = false, forc
   let batch = db.batch();
   let count = 0;
   const flush = async (force = false) => {
-    if (count >= 400 || (force && count > 0)) {
+    if (count >= 50 || (force && count > 0)) {
       await batch.commit();
       batch = db.batch();
       count = 0;
@@ -1022,18 +1113,22 @@ async function runShopeeSync({ startTs, endTs, label, updateCursor = false, forc
 
   let dailyGravados = 0;
   let subIdDailyGravados = 0;
+  let produtoDailyGravados = 0;
+  let perdasGravadas = 0;
   if (ativaDaily) {
     const isTodayOnly = label === "backfill_today_only";
-    const { dayMap, subIdDayMap } = agruparPorData(allNodes);
+    const { dayMap, subIdDayMap, produtoDayMap, perdas } = agruparPorData(allNodes);
     const state = { count };
     dailyGravados = await gravarShopeeDaily(dayMap, batch, flush, state, isTodayOnly, "replace");
     subIdDailyGravados = await gravarSubIdDaily(subIdDayMap, batch, flush, state, isTodayOnly, "replace");
+    produtoDailyGravados = await gravarProdutoDaily(produtoDayMap, batch, flush, state, isTodayOnly, "replace");
+    perdasGravadas = await gravarLogPerdas(perdas, batch, flush, state, isTodayOnly);
     count = state.count;
   }
 
   await flush(true);
 
-  console.log(`[shopee] fim ${label} | nodes=${allNodes.length} | produtos=${prodsGravados} | shopee_daily=${dailyGravados} | subid_daily=${subIdDailyGravados} | ${Date.now() - startedAt}ms`);
+  console.log(`[shopee] fim ${label} | nodes=${allNodes.length} | produtos=${prodsGravados} | shopee_daily=${dailyGravados} | subid_daily=${subIdDailyGravados} | produto_daily=${produtoDailyGravados} | log_perdas=${perdasGravadas} | ${Date.now() - startedAt}ms`);
 
   return {
     importacaoId,
@@ -1041,6 +1136,8 @@ async function runShopeeSync({ startTs, endTs, label, updateCursor = false, forc
     produtos: prodsGravados,
     shopeeDaily: dailyGravados,
     subIdDaily: subIdDailyGravados,
+    produtoDaily: produtoDailyGravados,
+    perdas: perdasGravadas,
     paginas: pageCount,
   };
 }
@@ -1948,7 +2045,7 @@ async function runMetaDailySync({ daysBack }) {
   let batch = db.batch();
   let count = 0;
   const flush = async (force = false) => {
-    if (count >= 400 || (force && count > 0)) {
+    if (count >= 50 || (force && count > 0)) {
       await batch.commit();
       batch = db.batch();
       count = 0;
