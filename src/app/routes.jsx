@@ -6,9 +6,11 @@ import {
   Target,
   Settings,
   Archive,
+  Sparkles,
 } from "lucide-react";
 import DashboardPage from "../pages/DashboardPage";
 import ShopeePage from "../pages/ShopeePage";
+import GarimpoPage from "../pages/GarimpoPage";
 import TrafficPage from "../pages/TrafficPage";
 import BackupPage from "../pages/BackupPage";
 import ImportsPage from "../pages/ImportsPage";
@@ -29,6 +31,13 @@ export const ROUTES = {
     sub: "Produtos, links e vínculo com anúncios",
     icon: Package,
     Page: ShopeePage,
+  },
+  garimpo: {
+    id: "garimpo",
+    title: "Garimpo",
+    sub: "Produtos com alta comissão · oportunidades diárias",
+    icon: Sparkles,
+    Page: GarimpoPage,
   },
   traffic: {
     id: "traffic",
@@ -68,4 +77,4 @@ export const ROUTES = {
   },
 };
 
-export const ROUTE_ORDER = ["dashboard", "shopee", "traffic", "backup", "imports", "audit", "settings"];
+export const ROUTE_ORDER = ["dashboard", "shopee", "garimpo", "traffic", "backup", "imports", "audit", "settings"];
