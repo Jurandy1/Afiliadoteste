@@ -543,7 +543,9 @@ export async function getDashboardKPIsByPeriodWithRetry(startDate, endDate, { re
   let result = await getDashboardKPIsByPeriod(startDate, endDate);
   const isPeriodoFiltrado = startDate !== "2020-01-01" && endDate !== "2030-12-31";
 
-  for (let i = 0; i < retries && isPeriodoFiltrado && result.diasComDados === 0 && result.vendas === 0; i++) {
+  const aindaVazio = (r) => (r.vendas || 0) === 0 && (r.comissao || 0) === 0 && (r.fatBruto || 0) === 0;
+
+  for (let i = 0; i < retries && isPeriodoFiltrado && aindaVazio(result); i++) {
     console.log(`🟡 [KPIsByPeriod] retry ${i + 1}/${retries} — aguardando Firestore...`);
     await sleep(delayMs);
     result = await getDashboardKPIsByPeriod(startDate, endDate);
