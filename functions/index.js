@@ -623,7 +623,7 @@ function agruparPorData(nodes) {
   const subIdDayMap = {};
   const produtoDayMap = {};
   const perdas = [];
-  const statusIgnorados = ["CANCELLED", "CANCELED", "FAILED", "FRAUD", "PENDING_PAYMENT", "EXPIRED", "UNPAID"];
+  const statusIgnorados = ["CANCELLED", "CANCELED", "FAILED", "FRAUD", "EXPIRED"];
 
   for (const node of nodes) {
     const orders = node.orders || [];
@@ -632,8 +632,9 @@ function agruparPorData(nodes) {
     const subKey = baseSubIdNorm || "ORGANICO";
 
     for (const ord of orders) {
-      const purchaseTimeSegundos = ord.purchaseTime || node.purchaseTime;
-      if (!purchaseTimeSegundos || typeof purchaseTimeSegundos !== "number") continue;
+      let purchaseTimeSegundos = ord.purchaseTime || node.purchaseTime;
+      purchaseTimeSegundos = Number(purchaseTimeSegundos);
+      if (!purchaseTimeSegundos || Number.isNaN(purchaseTimeSegundos)) continue;
       const dataHMBrasilia = new Date((purchaseTimeSegundos - 10800) * 1000);
       const date = dataHMBrasilia.toISOString().split("T")[0];
 
@@ -1229,10 +1230,23 @@ exports.shopeeBackfillNow = onRequest(
       return;
     }
     try {
-      const days = Math.max(1, Math.min(365, parseInt(req.query.days || "90", 10) || 90));
       const todayOnly = req.query.todayOnly === "1";
+      const rawDays = parseInt(req.query.days || (todayOnly ? "0" : "90"), 10);
+      const days = todayOnly
+        ? Math.max(0, Math.min(365, Number.isFinite(rawDays) ? rawDays : 0))
+        : Math.max(1, Math.min(365, Number.isFinite(rawDays) ? rawDays : 90));
       const now = Math.floor(Date.now() / 1000);
-      const start = now - days * 86400;
+
+      const startOfTodayBrtUnix = () => {
+        const brtNow = new Date((now - 10800) * 1000);
+        const y = brtNow.getUTCFullYear();
+        const m = String(brtNow.getUTCMonth() + 1).padStart(2, "0");
+        const d = String(brtNow.getUTCDate()).padStart(2, "0");
+        const ms = Date.parse(`${y}-${m}-${d}T00:00:00-03:00`);
+        return Math.floor(ms / 1000);
+      };
+
+      const start = todayOnly ? startOfTodayBrtUnix() : (now - days * 86400);
       const isFullBackfill = !todayOnly;
       const result = await runShopeeSync({
         startTs: start,

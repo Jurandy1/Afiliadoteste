@@ -286,7 +286,7 @@ export async function dispararBackfillHoje() {
     const ctrl = new AbortController();
     const timeoutId = setTimeout(() => ctrl.abort(), 90000);
 
-    const resp = await fetch(`${url}?days=1&todayOnly=1`, {
+    const resp = await fetch(`${url}?days=0&todayOnly=1`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,
