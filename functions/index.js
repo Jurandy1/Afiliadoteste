@@ -620,9 +620,13 @@ function shopeeAggregate(nodes) {
 
 function agruparPorData(nodes) {
   const dayMap = {};
+  const subIdDayMap = {};
 
   for (const node of nodes) {
     const orders = node.orders || [];
+    const baseSubIdRaw = node.utmContent || "";
+    const baseSubIdNorm = shopeeNormalizeSubId(baseSubIdRaw);
+    const subKey = baseSubIdNorm || "ORGANICO";
 
     for (const ord of orders) {
       const purchaseTimeSegundos = ord.purchaseTime || node.purchaseTime;
@@ -635,6 +639,42 @@ function agruparPorData(nodes) {
         ord.orderStatus || node.conversionStatus,
       );
       const isCancel = status === "cancelada";
+
+      if (!dayMap[date]) {
+        dayMap[date] = {
+          data: date,
+          pedidos: 0,
+          vendas: 0,
+          vendas_diretas: 0,
+          vendas_indiretas: 0,
+          faturamento: 0,
+          gmv_total: 0,
+          comissao_real: 0,
+          comissao_total: 0,
+          comissao_concluida: 0,
+          comissao_pendente: 0,
+          comissao_estimada: 0,
+        };
+      }
+
+      const subDocId = `${date}_${subKey}`;
+      if (!subIdDayMap[subDocId]) {
+        subIdDayMap[subDocId] = {
+          data: date,
+          subid: subKey,
+          pedidos: 0,
+          qtd_itens: 0,
+          faturamento: 0,
+          comissoes: 0,
+          comissoes_estimadas: 0,
+          vendas_diretas: 0,
+          vendas_indiretas: 0,
+        };
+      }
+
+      const pedidosInc = (items && items.length > 0) ? 1 : 0;
+      dayMap[date].pedidos += pedidosInc;
+      subIdDayMap[subDocId].pedidos += pedidosInc;
 
       for (const it of items) {
         const qty = parseInt(it.qty, 10) || 1;
@@ -650,22 +690,6 @@ function agruparPorData(nodes) {
 
         const isDireta = shopeeIsDireta(it.attributionType);
         const isIndireta = isDireta ? 0 : 1;
-
-        if (!dayMap[date]) {
-          dayMap[date] = {
-            data: date,
-            vendas: 0,
-            vendas_diretas: 0,
-            vendas_indiretas: 0,
-            faturamento: 0,
-            gmv_total: 0,
-            comissao_real: 0,
-            comissao_total: 0,
-            comissao_concluida: 0,
-            comissao_pendente: 0,
-            comissao_estimada: 0,
-          };
-        }
 
         const d = dayMap[date];
         if (!d) continue;
@@ -683,32 +707,100 @@ function agruparPorData(nodes) {
         } else if (status === "pendente") {
           d.comissao_pendente += comissaoReal;
         }
+
+        const s = subIdDayMap[subDocId];
+        if (!s) continue;
+        s.qtd_itens += qty;
+        s.faturamento += faturamentoReal;
+        s.comissoes += comissaoReal;
+        s.comissoes_estimadas += comissaoEstimada;
+        s.vendas_diretas += isDireta;
+        s.vendas_indiretas += isIndireta;
       }
     }
   }
 
-  return dayMap;
+  return { dayMap, subIdDayMap };
 }
 
-async function gravarShopeeDaily(dayMap, batch, flush, state, todayOnly = false) {
+function formatDateBRTYYYYMMDDNow() {
+  return new Date((Date.now() / 1000 - 10800) * 1000).toISOString().split("T")[0];
+}
+
+async function gravarShopeeDaily(dayMap, batch, flush, state, todayOnly = false, mode = "replace") {
   let gravados = 0;
   
-  // Se todayOnly=true, só grava o doc do dia atual (UTC).
+  // Se todayOnly=true, só grava o doc do dia atual (BRT).
   // Isso previne que backfills com janela curta destruam dias anteriores
   // com dados parciais.
-  const hojeUTC = new Date().toISOString().slice(0, 10);
+  const hojeBRT = formatDateBRTYYYYMMDDNow();
 
   for (const [date, totais] of Object.entries(dayMap)) {
     // Pula dias passados quando estamos em modo "todayOnly"
-    if (todayOnly && date !== hojeUTC) {
-      console.log(`[gravarShopeeDaily] todayOnly: pulando ${date} (não é hoje ${hojeUTC})`);
+    if (todayOnly && date !== hojeBRT) {
+      console.log(`[gravarShopeeDaily] todayOnly: pulando ${date} (não é hoje ${hojeBRT})`);
       continue;
     }
     const ref = db.collection("shopee_daily").doc(date);
-    batch.set(ref, {
-      ...totais,
-      updatedAt: FieldValue.serverTimestamp(),
-    });
+
+    if (mode === "increment") {
+      batch.set(ref, {
+        pedidos: FieldValue.increment(Number(totais.pedidos || 0)),
+        vendas: FieldValue.increment(Number(totais.vendas || 0)),
+        faturamento: FieldValue.increment(Number(totais.faturamento || 0)),
+        gmv_total: FieldValue.increment(Number(totais.gmv_total || 0)),
+        comissao_real: FieldValue.increment(Number(totais.comissao_real || 0)),
+        comissao_total: FieldValue.increment(Number(totais.comissao_total || 0)),
+        comissao_concluida: FieldValue.increment(Number(totais.comissao_concluida || 0)),
+        comissao_pendente: FieldValue.increment(Number(totais.comissao_pendente || 0)),
+        comissao_estimada: FieldValue.increment(Number(totais.comissao_estimada || 0)),
+        vendas_diretas: FieldValue.increment(Number(totais.vendas_diretas || 0)),
+        vendas_indiretas: FieldValue.increment(Number(totais.vendas_indiretas || 0)),
+        updatedAt: FieldValue.serverTimestamp(),
+      }, { merge: true });
+    } else {
+      batch.set(ref, {
+        ...totais,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+    }
+    state.count++;
+    gravados++;
+    await flush();
+  }
+
+  return gravados;
+}
+
+async function gravarSubIdDaily(subIdDayMap, batch, flush, state, todayOnly = false, mode = "replace") {
+  let gravados = 0;
+  const hojeBRT = formatDateBRTYYYYMMDDNow();
+
+  for (const [docId, totais] of Object.entries(subIdDayMap)) {
+    if (todayOnly && totais.data !== hojeBRT) continue;
+
+    const ref = db.collection("subid_daily").doc(docId);
+
+    if (mode === "increment") {
+      batch.set(ref, {
+        data: totais.data,
+        subid: totais.subid,
+        pedidos: FieldValue.increment(Number(totais.pedidos || 0)),
+        qtd_itens: FieldValue.increment(Number(totais.qtd_itens || 0)),
+        faturamento: FieldValue.increment(Number(totais.faturamento || 0)),
+        comissoes: FieldValue.increment(Number(totais.comissoes || 0)),
+        comissoes_estimadas: FieldValue.increment(Number(totais.comissoes_estimadas || 0)),
+        vendas_diretas: FieldValue.increment(Number(totais.vendas_diretas || 0)),
+        vendas_indiretas: FieldValue.increment(Number(totais.vendas_indiretas || 0)),
+        updatedAt: FieldValue.serverTimestamp(),
+      }, { merge: true });
+    } else {
+      batch.set(ref, {
+        ...totais,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+    }
+
     state.count++;
     gravados++;
     await flush();
@@ -866,99 +958,30 @@ async function runShopeeSync({ startTs, endTs, label, updateCursor = false, forc
     await flush();
   }
 
-  let subIdsGravados = 0;
-  if (forceReplace) {
-    for (const [id, row] of Object.entries(subIdMap)) {
-      const ref = db.collection("subid_vendas").doc(id);
-      batch.set(ref, {
-        ...row,
-        fonte: "shopee_api_backend",
-        importacaoId,
-        updatedAt: FieldValue.serverTimestamp(),
-        importadoEm: FieldValue.serverTimestamp(),
-      }, { merge: true });
-      count++; subIdsGravados++;
-      await flush();
-    }
-  } else {
-    const { conversionIds, conversoesJaProcessadas, novosNodes, novosConversionIds } = await getNovasConversoes(db, allNodes);
+  let novosNodes = allNodes || [];
+  let novosConversionIds = [];
+  if (!forceReplace) {
+    const { conversionIds, conversoesJaProcessadas, novosNodes: nn, novosConversionIds: nc } = await getNovasConversoes(db, allNodes);
     console.log(`[shopee] dedup: ${conversoesJaProcessadas.size} conversões já processadas de ${conversionIds.length} totais`);
-
-    const subIdMapNovo = {};
-    for (const node of novosNodes) {
-      const orders = node.orders || [];
-      const baseSubIdRaw = node.utmContent || "";
-      const baseSubIdNorm = shopeeNormalizeSubId(baseSubIdRaw);
-      const subKey = baseSubIdNorm || "missing_subid";
-
-      for (const ord of orders) {
-        const items = ord.items || [];
-        const status = shopeeClassifyStatus(ord.orderStatus || node.conversionStatus);
-        const isCancel = status === "cancelada";
-
-        for (const it of items) {
-          const qty = parseInt(it.qty, 10) || 1;
-          const price = parseFloat(it.itemPrice || "0") || 0;
-          const actual = parseFloat(it.actualAmount || "0") || 0;
-          const refund = parseFloat(it.refundAmount || "0") || 0;
-          const gmv = (actual > 0 ? actual : price * qty) - refund;
-          const commission = parseFloat(it.itemCommission || it.itemTotalCommission || "0") || 0;
-          const comissaoEstimada = parseFloat(it.itemTotalCommission || it.itemCommission || "0") || 0;
-          const isDireta = shopeeIsDireta(it.attributionType);
-          const isIndireta = isDireta ? 0 : 1;
-          const comissaoReal = isCancel ? 0 : commission;
-          const faturamentoReal = isCancel ? 0 : gmv;
-
-          if (!subIdMapNovo[subKey]) {
-            subIdMapNovo[subKey] = {
-              subid: baseSubIdNorm || "",
-              comissoes: 0,
-              comissoes_estimadas: 0,
-              faturamento: 0,
-              vendas_diretas: 0,
-              vendas_indiretas: 0,
-              qtd_itens: 0,
-            };
-          }
-
-          subIdMapNovo[subKey].comissoes_estimadas += comissaoEstimada;
-          subIdMapNovo[subKey].comissoes += comissaoReal;
-          subIdMapNovo[subKey].faturamento += faturamentoReal;
-          subIdMapNovo[subKey].vendas_diretas += isDireta;
-          subIdMapNovo[subKey].vendas_indiretas += isIndireta;
-          subIdMapNovo[subKey].qtd_itens += qty;
-        }
-      }
+    novosNodes = nn;
+    novosConversionIds = nc;
+  } else {
+    const set = new Set();
+    for (const node of allNodes || []) {
+      const cid = String(node?.conversionId || "").trim();
+      if (cid) set.add(cid);
     }
+    novosConversionIds = [...set];
+  }
 
-    for (const [id, delta] of Object.entries(subIdMapNovo)) {
-      const ref = db.collection("subid_vendas").doc(id);
-      batch.set(ref, {
-        subid: delta.subid,
-        comissoes: FieldValue.increment(delta.comissoes),
-        comissoes_estimadas: FieldValue.increment(delta.comissoes_estimadas),
-        faturamento: FieldValue.increment(delta.faturamento),
-        vendas_diretas: FieldValue.increment(delta.vendas_diretas),
-        vendas_indiretas: FieldValue.increment(delta.vendas_indiretas),
-        qtd_itens: FieldValue.increment(delta.qtd_itens),
-        fonte: "shopee_api_backend",
-        importacaoId,
-        updatedAt: FieldValue.serverTimestamp(),
-        importadoEm: FieldValue.serverTimestamp(),
-      }, { merge: true });
-      count++; subIdsGravados++;
-      await flush();
-    }
-
-    for (const cid of novosConversionIds) {
-      const ref = db.collection("conversoes_processadas").doc(cid);
-      batch.set(ref, {
-        processadoEm: FieldValue.serverTimestamp(),
-        importacaoId,
-      }, { merge: true });
-      count++;
-      await flush();
-    }
+  for (const cid of novosConversionIds) {
+    const ref = db.collection("conversoes_processadas").doc(cid);
+    batch.set(ref, {
+      processadoEm: FieldValue.serverTimestamp(),
+      importacaoId,
+    }, { merge: true });
+    count++;
+    await flush();
   }
 
   if (!(allNodes.length === 0 && label === "incremental_cursor")) {
@@ -998,23 +1021,26 @@ async function runShopeeSync({ startTs, endTs, label, updateCursor = false, forc
     label === "reconcile_30d" || label.startsWith("backfill_");
 
   let dailyGravados = 0;
+  let subIdDailyGravados = 0;
   if (ativaDaily) {
     const isTodayOnly = label === "backfill_today_only";
-    const dayMap = agruparPorData(allNodes);
+    const { dayMap, subIdDayMap } = agruparPorData(allNodes);
     const state = { count };
-    dailyGravados = await gravarShopeeDaily(dayMap, batch, flush, state, isTodayOnly);
+    dailyGravados = await gravarShopeeDaily(dayMap, batch, flush, state, isTodayOnly, "replace");
+    subIdDailyGravados = await gravarSubIdDaily(subIdDayMap, batch, flush, state, isTodayOnly, "replace");
     count = state.count;
   }
 
   await flush(true);
 
-  console.log(`[shopee] fim ${label} | nodes=${allNodes.length} | produtos=${prodsGravados} | subids=${subIdsGravados} | ${Date.now() - startedAt}ms`);
+  console.log(`[shopee] fim ${label} | nodes=${allNodes.length} | produtos=${prodsGravados} | shopee_daily=${dailyGravados} | subid_daily=${subIdDailyGravados} | ${Date.now() - startedAt}ms`);
 
   return {
     importacaoId,
     nodes: allNodes.length,
     produtos: prodsGravados,
-    subIds: subIdsGravados,
+    shopeeDaily: dailyGravados,
+    subIdDaily: subIdDailyGravados,
     paginas: pageCount,
   };
 }

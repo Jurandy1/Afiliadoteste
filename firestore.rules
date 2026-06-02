@@ -55,6 +55,13 @@ service cloud.firestore {
       allow update, delete: if true;
     }
 
+    // ── Conversões Processadas (dedup do sync incremental) ─────
+    // Backend usa Admin SDK que ignora rules, mas explicitamos por segurança
+    match /conversoes_processadas/{conversionId} {
+      allow read: if true;
+      allow write: if false;  // só backend (Admin SDK) escreve
+    }
+
     // ── Meta Ads ────────────────────────────────────────────────
     match /meta_ads/{adId} {
       allow read: if true;
@@ -112,6 +119,11 @@ service cloud.firestore {
 
     // ── Shopee Daily (agregado diário pra filtros de período) ──
     match /shopee_daily/{dailyId} {
+      allow read: if true;
+      allow write: if false;  // só backend (Admin SDK) escreve
+    }
+
+    match /subid_daily/{docId} {
       allow read: if true;
       allow write: if false;  // só backend (Admin SDK) escreve
     }

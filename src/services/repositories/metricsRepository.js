@@ -153,10 +153,12 @@ export async function getDashboardKPIsByPeriod(startDate, endDate) {
     comissao_estimada: 0,
     fat_bruto: 0,
     vendas: 0,
+    pedidos: 0,
     vendas_diretas: 0,
     vendas_indiretas: 0,
   };
 
+  const historicoDiario = [];
   snap.forEach((d) => {
     const x = d.data() || {};
     tot.comissao_total += x.comissao_total || 0;
@@ -166,9 +168,20 @@ export async function getDashboardKPIsByPeriod(startDate, endDate) {
     tot.comissao_estimada += x.comissao_estimada || 0;
     tot.fat_bruto += (x.faturamento ?? x.gmv_total ?? 0);
     tot.vendas += x.vendas || 0;
+    tot.pedidos += x.pedidos || 0;
     tot.vendas_diretas += x.vendas_diretas || 0;
     tot.vendas_indiretas += x.vendas_indiretas || 0;
+
+    historicoDiario.push({
+      data: d.id,
+      comissaoEstimada: Number(x.comissao_estimada || 0),
+      comissao: Number(x.comissao_real ?? x.comissao_total ?? 0),
+      faturamento: Number(x.faturamento ?? x.gmv_total ?? 0),
+      vendas: Number(x.vendas || 0),
+      pedidos: Number(x.pedidos || 0),
+    });
   });
+  historicoDiario.sort((a, b) => a.data.localeCompare(b.data));
 
   let gastoMeta = 0;
   let gastoPin = 0;
@@ -230,6 +243,7 @@ export async function getDashboardKPIsByPeriod(startDate, endDate) {
     comissaoPendente: tot.comissao_pendente,
     fatBruto: tot.fat_bruto,
     vendas: tot.vendas,
+    pedidos: tot.pedidos,
     vendasDiretas: tot.vendas_diretas,
     vendasIndiretas: tot.vendas_indiretas,
     gastoMeta: Math.round(gastoMeta * 100) / 100,
@@ -242,6 +256,7 @@ export async function getDashboardKPIsByPeriod(startDate, endDate) {
     lastUpdated: null,
     diasComDados: snap.size,
     _source: metaSource === "daily" ? "shopee_daily+meta_daily" : "shopee_daily+meta_proporcional",
+    historicoDiario,
   };
 }
 
@@ -850,4 +865,59 @@ export async function getGastoMetaDiarioByPeriod(startDate, endDate) {
     console.warn("[getGastoMetaDiarioByPeriod] erro:", err);
     return null;
   }
+}
+
+export async function getSubIdsByPeriod(startDate, endDate) {
+  if (!startDate || !endDate) return [];
+
+  const formataData = (d) => {
+    if (typeof d === "string" && d.length === 10) return d;
+    const dt = new Date(d);
+    const ano = dt.getFullYear();
+    const mes = String(dt.getMonth() + 1).padStart(2, "0");
+    const dia = String(dt.getDate()).padStart(2, "0");
+    return `${ano}-${mes}-${dia}`;
+  };
+
+  const startStr = formataData(startDate);
+  const endStr = formataData(endDate);
+
+  const q = query(
+    collection(db, "subid_daily"),
+    where("data", ">=", startStr),
+    where("data", "<=", endStr),
+  );
+  const snapshot = await getDocs(q);
+
+  const subIdMap = {};
+  snapshot.forEach((docSnap) => {
+    const d = docSnap.data() || {};
+    const subid = String(d.subid || "").trim() || "ORGANICO";
+
+    if (!subIdMap[subid]) {
+      subIdMap[subid] = {
+        id: subid,
+        subid,
+        comissoes: 0,
+        comissoes_estimadas: 0,
+        faturamento: 0,
+        vendas_diretas: 0,
+        vendas_indiretas: 0,
+        qtd_itens: 0,
+        total_vendas: 0,
+        pedidos: 0,
+      };
+    }
+
+    subIdMap[subid].comissoes += Number(d.comissoes || 0);
+    subIdMap[subid].comissoes_estimadas += Number(d.comissoes_estimadas || 0);
+    subIdMap[subid].faturamento += Number(d.faturamento || 0);
+    subIdMap[subid].vendas_diretas += Number(d.vendas_diretas || 0);
+    subIdMap[subid].vendas_indiretas += Number(d.vendas_indiretas || 0);
+    subIdMap[subid].qtd_itens += Number(d.qtd_itens || 0);
+    subIdMap[subid].total_vendas += Number(d.qtd_itens || 0);
+    subIdMap[subid].pedidos += Number(d.pedidos || 0);
+  });
+
+  return Object.values(subIdMap);
 }

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useMemo, useState } from "react";
 import { collection, getDocs } from "firebase/firestore";
 import { BarChart3, DollarSign, ShoppingBag, Target, TrendingUp, Ticket } from "lucide-react";
-import { buscarProdutos, dispararBackfillHoje, getComparacaoMensal, getDashboardData, getDashboardKPIs, getDashboardKPIsByPeriod, getProdutosPagina, getResumoSemana, getSubIdPanelData, getUltimaAtualizacaoHoje } from "../services/repositories/metricsRepository";
+import { buscarProdutos, dispararBackfillHoje, getComparacaoMensal, getDashboardData, getDashboardKPIs, getDashboardKPIsByPeriod, getProdutosPagina, getResumoSemana, getSubIdPanelData, getSubIdsByPeriod, getUltimaAtualizacaoHoje } from "../services/repositories/metricsRepository";
 import { filterProdutos, sortProdutos } from "../domain/attribution/productFilters";
 import { paginate, DEFAULT_PAGE_SIZE } from "../utils/pagination";
 import { fmt, fmtPct, fmtRoas, fmtNum } from "../utils/formatters";
@@ -258,11 +258,13 @@ export default function DashboardPage() {
       }
 
       const range = calcularRangePeriodo(periodoFiltro, rangeCustom);
-      const [kpisFromSumario, produtosPage] = await Promise.all([
-        range
-          ? getDashboardKPIsByPeriod(range.startDate, range.endDate).catch(() => null)
-          : getDashboardKPIs().catch(() => null),
+      const dataInicioBusca = (range && range.startDate) ? range.startDate : "2020-01-01";
+      const dataFimBusca = (range && range.endDate) ? range.endDate : "2030-12-31";
+
+      const [kpisFromSumario, produtosPage, subIdsFiltrados] = await Promise.all([
+        getDashboardKPIsByPeriod(dataInicioBusca, dataFimBusca).catch(() => null),
         getProdutosPagina(50).catch(() => ({ produtos: [], lastDoc: null, hasMore: false })),
+        getSubIdsByPeriod(dataInicioBusca, dataFimBusca).catch(() => []),
       ]);
 
       if (abortRef.current) return;
@@ -292,6 +294,7 @@ export default function DashboardPage() {
           comissaoCancelada: 0,
           faturamentoBruto: kpisFromSumario.fatBruto,
           totalVendas: kpisFromSumario.vendas,
+          totalPedidos: kpisFromSumario.pedidos || 0,
           vendasDiretas: kpisFromSumario.vendasDiretas,
           vendasIndiretas: kpisFromSumario.vendasIndiretas,
           qtdItens: 0,
@@ -317,9 +320,10 @@ export default function DashboardPage() {
         statusCount: { Escalando: 0, Validando: 0, Pausado: 0 },
         ranking,
         produtos,
-        subIds: [],
-        subIdDiagnostics: null,
+        subIds: subIdsFiltrados,
+        subIdDiagnostics: { totalRows: subIdsFiltrados.length, isReliable: true, source: "subid_daily" },
         operationalAlerts: [],
+        chartData: kpisFromSumario.historicoDiario || [],
       });
 
       setProdCursor({ lastDoc: produtosPage?.lastDoc || null, hasMore: !!produtosPage?.hasMore });
@@ -368,8 +372,8 @@ export default function DashboardPage() {
   };
 
   const kpis              = data?.kpis;
-  const subIds            = subIdsPanel ?? data?.subIds;
-  const subIdDiagnostics  = subIdDiagnosticsPanel ?? data?.subIdDiagnostics;
+  const subIds            = data?.subIds;
+  const subIdDiagnostics  = data?.subIdDiagnostics;
   const ranking           = data?.ranking || [];
   const operationalAlerts = data?.operationalAlerts || [];
 
@@ -463,6 +467,7 @@ export default function DashboardPage() {
     const roas = gasto > 0 ? comissao / gasto : 0;
 
     const comissaoEstimada = filtrados.reduce((s, r) => {
+      if ((r.comissoes_estimadas || 0) > 0) return s + (r.comissoes_estimadas || 0);
       const key = r.subid || r.id || "";
       if (key) return s + (subIdEstimadasMap[key] || 0);
       return s + (subIdEstimadasMap.missing_subid || 0);
@@ -760,6 +765,14 @@ export default function DashboardPage() {
           up
         />
         <KPICard
+          icon={<ShoppingBag size={18} />}
+          iconBg="bg-amber-50 text-amber-700"
+          label="Pedidos"
+          value={fmtNum(kpis.totalPedidos || 0)}
+          trend="Ordens"
+          up
+        />
+        <KPICard
           icon={<Ticket size={18} />}
           iconBg="bg-rose-50 text-rose-600"
           label="Ticket Médio"
@@ -821,18 +834,7 @@ export default function DashboardPage() {
         )}
       </div>
 
-      {subIdDiagnostics && !subIdDiagnostics.isReliable && (
-        <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-4">
-          <h3 className="text-sm font-semibold text-amber-800 mb-1">Detalhamento por SubID incompleto</h3>
-          <p className="text-xs text-amber-700">
-            O dashboard encontrou {fmtNum(subIdDiagnostics.totalRows)} SubIDs de ads/cliques, mas nenhum agregado de vendas por SubID salvo no Firebase.
-            Sem essa coleção, a tabela fica distorcida em relação ao <code>dashboard_completo.py</code> e ao CSV final.
-          </p>
-          <p className="text-xs text-amber-700 mt-2">
-            Para corrigir de verdade: publique a regra de <code>subid_vendas</code> no Firebase e reimporte a planilha de <em>Shopee — Vendas</em>.
-          </p>
-        </div>
-      )}
+      
 
       {/* Aviso quando filtro de período está ativo — painel SubID é histórico */}
       {periodoFiltro !== "all" && subIds && subIds.length > 0 && subIdDiagnostics?.isReliable && (
@@ -841,7 +843,7 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {subIds && subIds.length > 0 && subIdDiagnostics?.isReliable && (
+      {subIds && subIds.length > 0 && (subIdDiagnostics?.isReliable || periodoFiltro !== "all") && (
         <div className="bg-white rounded-lg border border-gray-200 overflow-hidden mb-4">
           <div className="px-4 py-3 border-b border-gray-100">
             {subIds && subIds.length > 0 && todosSubIdsDisponiveis.length > 0 && (
@@ -1217,6 +1219,12 @@ export default function DashboardPage() {
               </tbody>
             </table>
           </div>
+        </div>
+      )}
+
+      {(!subIds || subIds.length === 0) && (
+        <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 mb-4 text-sm text-gray-600">
+          Nenhum SubID encontrado no período selecionado (subid_daily).
         </div>
       )}
 
