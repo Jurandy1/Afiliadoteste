@@ -67,21 +67,6 @@ export function parseShopeeSalesRows(rows) {
     const statusNorm = statusNormRaw.replace(/_/g, " ");
     const notasNorm = notasNormRaw.replace(/_/g, " ");
 
-    const isInvalid =
-      statusNorm.includes("cancelad") ||
-      statusNorm.includes("incompleto") ||
-      statusNormRaw.includes("nao_pago") ||
-      statusNorm.includes("nao pago") ||
-      notasNorm.includes("cancelad") ||
-      notasNorm.includes("incompleto") ||
-      notasNorm.includes("nao pago") ||
-      notasNorm.includes("nao foi pago") ||
-      notasNorm.includes("ainda nao pagou") ||
-      notasNorm.includes("nao pagou") ||
-      notasNorm.includes("aguardando pagamento");
-
-    if (isInvalid) continue;
-
     const key = nomeResolvido.toLowerCase();
     const preco = COL_PRECO ? parseBRL(row[COL_PRECO]) : 0;
     const reembolso = COL_REEMBOLSO ? parseBRL(row[COL_REEMBOLSO]) : 0;

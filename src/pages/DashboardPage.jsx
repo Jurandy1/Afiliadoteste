@@ -99,10 +99,18 @@ function formatarTempoAtras(date) {
   return `há ${dias} dias`;
 }
 
+function formatDateLocalYYYYMMDD(date) {
+  const d = date instanceof Date ? date : new Date(date);
+  const ano = d.getFullYear();
+  const mes = String(d.getMonth() + 1).padStart(2, "0");
+  const dia = String(d.getDate()).padStart(2, "0");
+  return `${ano}-${mes}-${dia}`;
+}
+
 function calcularRangePeriodo(periodo, rangeCustom) {
   console.log("🟢 [calcularRange] periodo:", periodo, "rangeCustom:", rangeCustom);
   const hoje = new Date();
-  const hojeStr = hoje.toISOString().slice(0, 10);
+  const hojeStr = formatDateLocalYYYYMMDD(hoje);
 
   if (periodo === "hoje") {
     const result = { startDate: hojeStr, endDate: hojeStr };
@@ -121,28 +129,28 @@ function calcularRangePeriodo(periodo, rangeCustom) {
   if (periodo === "7d") {
     const d = new Date(hoje);
     d.setDate(d.getDate() - 7);
-    const result = { startDate: d.toISOString().slice(0, 10), endDate: hojeStr };
+    const result = { startDate: formatDateLocalYYYYMMDD(d), endDate: hojeStr };
     console.log("🟢 [calcularRange] retornando:", result);
     return result;
   }
   if (periodo === "14d") {
     const d = new Date(hoje);
     d.setDate(d.getDate() - 14);
-    const result = { startDate: d.toISOString().slice(0, 10), endDate: hojeStr };
+    const result = { startDate: formatDateLocalYYYYMMDD(d), endDate: hojeStr };
     console.log("🟢 [calcularRange] retornando:", result);
     return result;
   }
   if (periodo === "30d") {
     const d = new Date(hoje);
     d.setDate(d.getDate() - 30);
-    const result = { startDate: d.toISOString().slice(0, 10), endDate: hojeStr };
+    const result = { startDate: formatDateLocalYYYYMMDD(d), endDate: hojeStr };
     console.log("🟢 [calcularRange] retornando:", result);
     return result;
   }
   if (periodo === "mes_atual") {
     const inicio = new Date(hoje.getFullYear(), hoje.getMonth(), 1);
     const result = {
-      startDate: inicio.toISOString().slice(0, 10),
+      startDate: formatDateLocalYYYYMMDD(inicio),
       endDate: hojeStr,
     };
     console.log("🟢 [calcularRange] retornando:", result);
@@ -152,8 +160,8 @@ function calcularRangePeriodo(periodo, rangeCustom) {
     const inicio = new Date(hoje.getFullYear(), hoje.getMonth() - 1, 1);
     const fim = new Date(hoje.getFullYear(), hoje.getMonth(), 0);
     const result = {
-      startDate: inicio.toISOString().slice(0, 10),
-      endDate: fim.toISOString().slice(0, 10),
+      startDate: formatDateLocalYYYYMMDD(inicio),
+      endDate: formatDateLocalYYYYMMDD(fim),
     };
     console.log("🟢 [calcularRange] retornando:", result);
     return result;
@@ -644,7 +652,7 @@ export default function DashboardPage() {
               setRangeCustom((prev) => ({ ...prev, start: e.target.value }))
             }
             className="px-2 py-1 border border-gray-300 rounded text-sm"
-            max={new Date().toISOString().slice(0, 10)}
+            max={formatDateLocalYYYYMMDD(new Date())}
           />
           <span className="text-sm text-gray-500">até</span>
           <input
@@ -654,7 +662,7 @@ export default function DashboardPage() {
               setRangeCustom((prev) => ({ ...prev, end: e.target.value }))
             }
             className="px-2 py-1 border border-gray-300 rounded text-sm"
-            max={new Date().toISOString().slice(0, 10)}
+            max={formatDateLocalYYYYMMDD(new Date())}
           />
           <button
             onClick={() => {

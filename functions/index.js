@@ -528,6 +528,8 @@ function shopeeAggregate(nodes) {
         const gmv = (actual > 0 ? actual : price * qty) - refund;
         const commission = parseFloat(it.itemCommission || it.itemTotalCommission || "0") || 0;
         const comissaoEstimada = parseFloat(it.itemTotalCommission || it.itemCommission || "0") || 0;
+        const comissaoReal = isCancel ? 0 : commission;
+        const faturamentoReal = isCancel ? 0 : gmv;
 
         const isDireta = shopeeIsDireta(it.attributionType);
         const isIndireta = isDireta ? 0 : 1;
@@ -536,16 +538,6 @@ function shopeeAggregate(nodes) {
           .filter(Boolean).join(" > ");
 
         const subKey = baseSubIdNorm || "missing_subid";
-
-        if (isCancel) {
-          if (prodMap[key]) {
-            prodMap[key].comissao_estimada += comissaoEstimada;
-          }
-          if (subIdMap[subKey]) {
-            subIdMap[subKey].comissoes_estimadas += comissaoEstimada;
-          }
-          continue;
-        }
 
         if (!prodMap[key]) {
           prodMap[key] = {
@@ -579,8 +571,8 @@ function shopeeAggregate(nodes) {
 
         const p = prodMap[key];
         p.vendas += qty;
-        p.gmv_total += gmv;
-        p.comissao_total += commission;
+        p.gmv_total += faturamentoReal;
+        p.comissao_total += comissaoReal;
         p.comissao_estimada += comissaoEstimada;
         if (price > 0 && (!p.preco || p.preco === 0)) p.preco = price;
         if (baseSubIdRaw) p.sub_ids.add(baseSubIdRaw);
@@ -590,13 +582,13 @@ function shopeeAggregate(nodes) {
 
         if (status === "concluida") {
           p.pedidos_concluidos += 1;
-          p.comissao_concluida += commission;
+          p.comissao_concluida += comissaoReal;
         } else if (status === "cancelada") {
           p.pedidos_cancelados += 1;
-          p.comissao_cancelada += commission;
+          p.comissao_cancelada += comissaoEstimada;
         } else {
           p.pedidos_pendentes += 1;
-          p.comissao_pendente += commission;
+          p.comissao_pendente += comissaoReal;
         }
 
         const canal = (it.channelType || node.referrer || "Others").trim() || "Others";
@@ -614,8 +606,8 @@ function shopeeAggregate(nodes) {
           };
         }
         subIdMap[subKey].comissoes_estimadas += comissaoEstimada;
-        subIdMap[subKey].comissoes += commission;
-        subIdMap[subKey].faturamento += gmv;
+        subIdMap[subKey].comissoes += comissaoReal;
+        subIdMap[subKey].faturamento += faturamentoReal;
         subIdMap[subKey].vendas_diretas += isDireta;
         subIdMap[subKey].vendas_indiretas += isIndireta;
         subIdMap[subKey].qtd_itens += qty;
@@ -630,16 +622,14 @@ function agruparPorData(nodes) {
   const dayMap = {};
 
   for (const node of nodes) {
-    if (!node.purchaseTime || typeof node.purchaseTime !== "number") {
-      continue;
-    }
-    const date = new Date(node.purchaseTime * 1000)
-      .toISOString()
-      .slice(0, 10);
-
     const orders = node.orders || [];
 
     for (const ord of orders) {
+      const purchaseTimeSegundos = ord.purchaseTime || node.purchaseTime;
+      if (!purchaseTimeSegundos || typeof purchaseTimeSegundos !== "number") continue;
+      const dataHMBrasilia = new Date((purchaseTimeSegundos - 10800) * 1000);
+      const date = dataHMBrasilia.toISOString().split("T")[0];
+
       const items = ord.items || [];
       const status = shopeeClassifyStatus(
         ord.orderStatus || node.conversionStatus,
@@ -655,40 +645,43 @@ function agruparPorData(nodes) {
         const commission =
           parseFloat(it.itemCommission || it.itemTotalCommission || "0") || 0;
         const comissaoEstimada = parseFloat(it.itemTotalCommission || it.itemCommission || "0") || 0;
+        const comissaoReal = isCancel ? 0 : commission;
+        const faturamentoReal = isCancel ? 0 : gmv;
 
         const isDireta = shopeeIsDireta(it.attributionType);
         const isIndireta = isDireta ? 0 : 1;
 
         if (!dayMap[date]) {
-          if (!isCancel) {
-            dayMap[date] = {
-              data: date,
-              vendas: 0,
-              vendas_diretas: 0,
-              vendas_indiretas: 0,
-              gmv_total: 0,
-              comissao_total: 0,
-              comissao_concluida: 0,
-              comissao_pendente: 0,
-              comissao_estimada: 0,
-            };
-          }
+          dayMap[date] = {
+            data: date,
+            vendas: 0,
+            vendas_diretas: 0,
+            vendas_indiretas: 0,
+            faturamento: 0,
+            gmv_total: 0,
+            comissao_real: 0,
+            comissao_total: 0,
+            comissao_concluida: 0,
+            comissao_pendente: 0,
+            comissao_estimada: 0,
+          };
         }
 
         const d = dayMap[date];
         if (!d) continue;
         d.comissao_estimada += comissaoEstimada;
-        if (isCancel) continue;
         d.vendas += qty;
         d.vendas_diretas += isDireta;
         d.vendas_indiretas += isIndireta;
-        d.gmv_total += gmv;
-        d.comissao_total += commission;
+        d.faturamento += faturamentoReal;
+        d.gmv_total += faturamentoReal;
+        d.comissao_real += comissaoReal;
+        d.comissao_total += comissaoReal;
 
         if (status === "concluida") {
-          d.comissao_concluida += commission;
-        } else {
-          d.comissao_pendente += commission;
+          d.comissao_concluida += comissaoReal;
+        } else if (status === "pendente") {
+          d.comissao_pendente += comissaoReal;
         }
       }
     }
@@ -913,6 +906,8 @@ async function runShopeeSync({ startTs, endTs, label, updateCursor = false, forc
           const comissaoEstimada = parseFloat(it.itemTotalCommission || it.itemCommission || "0") || 0;
           const isDireta = shopeeIsDireta(it.attributionType);
           const isIndireta = isDireta ? 0 : 1;
+          const comissaoReal = isCancel ? 0 : commission;
+          const faturamentoReal = isCancel ? 0 : gmv;
 
           if (!subIdMapNovo[subKey]) {
             subIdMapNovo[subKey] = {
@@ -927,10 +922,8 @@ async function runShopeeSync({ startTs, endTs, label, updateCursor = false, forc
           }
 
           subIdMapNovo[subKey].comissoes_estimadas += comissaoEstimada;
-          if (isCancel) continue;
-
-          subIdMapNovo[subKey].comissoes += commission;
-          subIdMapNovo[subKey].faturamento += gmv;
+          subIdMapNovo[subKey].comissoes += comissaoReal;
+          subIdMapNovo[subKey].faturamento += faturamentoReal;
           subIdMapNovo[subKey].vendas_diretas += isDireta;
           subIdMapNovo[subKey].vendas_indiretas += isIndireta;
           subIdMapNovo[subKey].qtd_itens += qty;
