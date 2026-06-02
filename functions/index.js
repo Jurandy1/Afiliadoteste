@@ -768,7 +768,7 @@ function formatDateBRTYYYYMMDDNow() {
   return new Date((Date.now() / 1000 - 10800) * 1000).toISOString().split("T")[0];
 }
 
-async function gravarShopeeDaily(dayMap, batch, flush, state, todayOnly = false, mode = "replace") {
+async function gravarShopeeDaily(dayMap, state, flush, todayOnly = false, mode = "replace") {
   let gravados = 0;
   
   // Se todayOnly=true, só grava o doc do dia atual (BRT).
@@ -785,7 +785,7 @@ async function gravarShopeeDaily(dayMap, batch, flush, state, todayOnly = false,
     const ref = db.collection("shopee_daily").doc(date);
 
     if (mode === "increment") {
-      batch.set(ref, {
+      state.batch.set(ref, {
         pedidos: FieldValue.increment(Number(totais.pedidos || 0)),
         vendas: FieldValue.increment(Number(totais.vendas || 0)),
         faturamento: FieldValue.increment(Number(totais.faturamento || 0)),
@@ -800,7 +800,7 @@ async function gravarShopeeDaily(dayMap, batch, flush, state, todayOnly = false,
         updatedAt: FieldValue.serverTimestamp(),
       }, { merge: true });
     } else {
-      batch.set(ref, {
+      state.batch.set(ref, {
         ...totais,
         updatedAt: FieldValue.serverTimestamp(),
       });
@@ -813,7 +813,7 @@ async function gravarShopeeDaily(dayMap, batch, flush, state, todayOnly = false,
   return gravados;
 }
 
-async function gravarSubIdDaily(subIdDayMap, batch, flush, state, todayOnly = false, mode = "replace") {
+async function gravarSubIdDaily(subIdDayMap, state, flush, todayOnly = false, mode = "replace") {
   let gravados = 0;
   const hojeBRT = formatDateBRTYYYYMMDDNow();
 
@@ -823,7 +823,7 @@ async function gravarSubIdDaily(subIdDayMap, batch, flush, state, todayOnly = fa
     const ref = db.collection("subid_daily").doc(docId);
 
     if (mode === "increment") {
-      batch.set(ref, {
+      state.batch.set(ref, {
         data: totais.data,
         subid: totais.subid,
         pedidos: FieldValue.increment(Number(totais.pedidos || 0)),
@@ -836,7 +836,7 @@ async function gravarSubIdDaily(subIdDayMap, batch, flush, state, todayOnly = fa
         updatedAt: FieldValue.serverTimestamp(),
       }, { merge: true });
     } else {
-      batch.set(ref, {
+      state.batch.set(ref, {
         ...totais,
         updatedAt: FieldValue.serverTimestamp(),
       });
@@ -850,7 +850,7 @@ async function gravarSubIdDaily(subIdDayMap, batch, flush, state, todayOnly = fa
   return gravados;
 }
 
-async function gravarProdutoDaily(produtoDayMap, batch, flush, state, todayOnly = false, mode = "replace") {
+async function gravarProdutoDaily(produtoDayMap, state, flush, todayOnly = false, mode = "replace") {
   let gravados = 0;
   const hojeBRT = formatDateBRTYYYYMMDDNow();
 
@@ -859,7 +859,7 @@ async function gravarProdutoDaily(produtoDayMap, batch, flush, state, todayOnly 
 
     const ref = db.collection("produto_daily").doc(docId);
     if (mode === "increment") {
-      batch.set(ref, {
+      state.batch.set(ref, {
         data: totais.data,
         produto_id: totais.produto_id,
         nome: totais.nome,
@@ -870,7 +870,7 @@ async function gravarProdutoDaily(produtoDayMap, batch, flush, state, todayOnly 
         updatedAt: FieldValue.serverTimestamp(),
       }, { merge: true });
     } else {
-      batch.set(ref, {
+      state.batch.set(ref, {
         ...totais,
         updatedAt: FieldValue.serverTimestamp(),
       });
@@ -883,7 +883,7 @@ async function gravarProdutoDaily(produtoDayMap, batch, flush, state, todayOnly 
   return gravados;
 }
 
-async function gravarLogPerdas(perdas, batch, flush, state, todayOnly = false) {
+async function gravarLogPerdas(perdas, state, flush, todayOnly = false) {
   if (!perdas || perdas.length === 0) return 0;
   let gravados = 0;
   const hojeBRT = formatDateBRTYYYYMMDDNow();
@@ -891,7 +891,7 @@ async function gravarLogPerdas(perdas, batch, flush, state, todayOnly = false) {
   for (const row of perdas) {
     if (todayOnly && row.data !== hojeBRT) continue;
     const ref = db.collection("log_perdas").doc();
-    batch.set(ref, row);
+    state.batch.set(ref, row);
     state.count++;
     gravados++;
     await flush();
@@ -1019,13 +1019,12 @@ async function runShopeeSync({ startTs, endTs, label, updateCursor = false, forc
   const { allNodes, pageCount } = await shopeePullRange(startTs, endTs);
   const { prodMap, subIdMap } = shopeeAggregate(allNodes);
 
-  let batch = db.batch();
-  let count = 0;
+  const state = { batch: db.batch(), count: 0 };
   const flush = async (force = false) => {
-    if (count >= 50 || (force && count > 0)) {
-      await batch.commit();
-      batch = db.batch();
-      count = 0;
+    if (state.count >= 50 || (force && state.count > 0)) {
+      await state.batch.commit();
+      state.batch = db.batch();
+      state.count = 0;
     }
   };
 
@@ -1036,7 +1035,7 @@ async function runShopeeSync({ startTs, endTs, label, updateCursor = false, forc
       : `name_${prod.nome.toLowerCase().replace(/[^a-z0-9]/g, "_").slice(0, 80)}`;
 
     const ref = db.collection("produtos").doc(docId);
-    batch.set(ref, {
+    state.batch.set(ref, {
       ...prod,
       sub_ids: Array.from(prod.sub_ids),
       gmv: prod.gmv_total,
@@ -1045,7 +1044,7 @@ async function runShopeeSync({ startTs, endTs, label, updateCursor = false, forc
       updatedAt: FieldValue.serverTimestamp(),
       importadoEm: FieldValue.serverTimestamp(),
     }, { merge: true });
-    count++; prodsGravados++;
+    state.count++; prodsGravados++;
     await flush();
   }
 
@@ -1067,16 +1066,16 @@ async function runShopeeSync({ startTs, endTs, label, updateCursor = false, forc
 
   for (const cid of novosConversionIds) {
     const ref = db.collection("conversoes_processadas").doc(cid);
-    batch.set(ref, {
+    state.batch.set(ref, {
       processadoEm: FieldValue.serverTimestamp(),
       importacaoId,
     }, { merge: true });
-    count++;
+    state.count++;
     await flush();
   }
 
   if (!(allNodes.length === 0 && label === "incremental_cursor")) {
-    batch.set(importRef, {
+    state.batch.set(importRef, {
       tipo: "shopee_venda",
       fonte: "api_backend",
       modo: "append",
@@ -1091,7 +1090,7 @@ async function runShopeeSync({ startTs, endTs, label, updateCursor = false, forc
       paginas: pageCount,
       importadoEm: FieldValue.serverTimestamp(),
     });
-    count++;
+    state.count++;
   }
 
   // Atualiza o cursor SÓ se a sync rodou até o fim sem exceção.
@@ -1099,13 +1098,13 @@ async function runShopeeSync({ startTs, endTs, label, updateCursor = false, forc
   // que entram com atraso na atribuição.
   if (updateCursor) {
     const cursorTs = endTs - SHOPEE_CURSOR_BACKFILL_MIN * 60;
-    batch.set(db.collection("sync_state").doc("shopee"), {
+    state.batch.set(db.collection("sync_state").doc("shopee"), {
       lastSuccessTs: cursorTs,
       lastRunAt: FieldValue.serverTimestamp(),
       lastLabel: label,
       lastNodes: allNodes.length,
     }, { merge: true });
-    count++;
+    state.count++;
   }
 
   const ativaDaily =
@@ -1118,12 +1117,10 @@ async function runShopeeSync({ startTs, endTs, label, updateCursor = false, forc
   if (ativaDaily) {
     const isTodayOnly = label === "backfill_today_only";
     const { dayMap, subIdDayMap, produtoDayMap, perdas } = agruparPorData(allNodes);
-    const state = { count };
-    dailyGravados = await gravarShopeeDaily(dayMap, batch, flush, state, isTodayOnly, "replace");
-    subIdDailyGravados = await gravarSubIdDaily(subIdDayMap, batch, flush, state, isTodayOnly, "replace");
-    produtoDailyGravados = await gravarProdutoDaily(produtoDayMap, batch, flush, state, isTodayOnly, "replace");
-    perdasGravadas = await gravarLogPerdas(perdas, batch, flush, state, isTodayOnly);
-    count = state.count;
+    dailyGravados = await gravarShopeeDaily(dayMap, state, flush, isTodayOnly, "replace");
+    subIdDailyGravados = await gravarSubIdDaily(subIdDayMap, state, flush, isTodayOnly, "replace");
+    produtoDailyGravados = await gravarProdutoDaily(produtoDayMap, state, flush, isTodayOnly, "replace");
+    perdasGravadas = await gravarLogPerdas(perdas, state, flush, isTodayOnly);
   }
 
   await flush(true);
