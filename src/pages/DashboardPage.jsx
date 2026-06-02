@@ -782,7 +782,7 @@ export default function DashboardPage() {
               {fmtNum(data?.perdas?.countPerdas || 0)}
             </div>
             <div style={{ fontSize: "0.75em" }}>
-              R$ {(data?.perdas?.totalFatPerdido || 0).toFixed(2)} Perdidos
+              R$ {(data?.perdas?.totalFatPerdido || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} Perdidos
             </div>
           </div>
         </div>
