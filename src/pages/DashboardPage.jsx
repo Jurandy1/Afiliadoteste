@@ -11,6 +11,7 @@ import EmptyState from "../components/cards/EmptyState";
 import CommissionBreakdown from "../components/cards/CommissionBreakdown";
 import OperationalAlerts from "../components/cards/OperationalAlerts";
 import ChartCanvas from "../components/charts/ChartCanvas";
+import AlertasBell from "../components/AlertasBell";
 import ProductFilters from "../components/filters/ProductFilters";
 import SortTh from "../components/tables/SortTh";
 import PaginationBar from "../components/tables/PaginationBar";
@@ -643,6 +644,9 @@ export default function DashboardPage() {
                 : opt.label}
             </button>
           ))}
+          <div className="ml-auto">
+            <AlertasBell />
+          </div>
         </div>
 
         {ultimaAtualizacao && (

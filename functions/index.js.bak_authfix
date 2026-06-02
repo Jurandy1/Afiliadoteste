@@ -2172,7 +2172,6 @@ exports.metaDailyIncrement = onSchedule(
 // Helper: chamada Shopee com retry exponencial em rate limit / 5xx
 // ----------------------------------------------------------------------------
 async function shopeeApiCallRetry(query, secrets, maxRetries = 3) {
-  const crypto = require("crypto");
   let lastErr;
   for (let i = 0; i < maxRetries; i++) {
     try {
@@ -2294,13 +2293,13 @@ async function runShopeeGarimpo({ secrets, maxPaginas = 5 }) {
   const hojeStr = new Date(Date.now() - 3 * 3600 * 1000).toISOString().split("T")[0];
   const todosProdutos = [];
 
-  // Pagina productOfferV2 ordenado por comissao (sortType=5)
+  // Pagina productOfferV2 ordenado por comissao (sortType=5) e maior comissao (listType=1)
   for (let page = 1; page <= maxPaginas; page++) {
     const query = `{
-      productOfferV2(sortType: 5, page: ${page}, limit: 50) {
+      productOfferV2(listType: 1, sortType: 5, page: ${page}, limit: 50) {
         nodes {
           itemId shopId productName productLink offerLink imageUrl
-          priceMin priceMax sales ratingStar
+          priceMin priceMax priceDiscountRate sales ratingStar
           commissionRate sellerCommissionRate shopeeCommissionRate commission
           shopName shopType periodStartTime periodEndTime
         }
@@ -2327,7 +2326,7 @@ async function runShopeeGarimpo({ secrets, maxPaginas = 5 }) {
         imagem: String(n.imageUrl || ""),
         preco_min: Number(n.priceMin || 0),
         preco_max: Number(n.priceMax || 0),
-        desconto_pct: 0,
+        desconto_pct: Number(n.priceDiscountRate || 0),
         vendas_shopee: Number(n.sales || 0),
         rating: Number(n.ratingStar || 0),
         comissao_pct: Number(n.commissionRate || 0) * 100,
@@ -2507,9 +2506,9 @@ exports.shopeeGarimpoNow = onRequest(
     res.set("Access-Control-Allow-Methods", "POST, OPTIONS");
     res.set("Access-Control-Allow-Headers", "Authorization, Content-Type");
     if (req.method === "OPTIONS") { res.status(204).send(""); return; }
-    const provided = String(req.get("authorization") || "").trim();
-    const secret = (process.env.META_SYNC_SECRET || "").trim();
-    if (!secret || provided !== `Bearer ${secret}`) {
+    const auth = req.headers.authorization || "";
+    const token = auth.replace(/^Bearer\s+/i, "").trim();
+    if (token !== process.env.META_SYNC_SECRET) {
       res.status(401).json({ error: "unauthorized" });
       return;
     }

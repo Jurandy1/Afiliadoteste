@@ -1,0 +1,126 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  annotations:
+    cloudfunctions.googleapis.com/function-id: shopeeGarimpoNow
+    run.googleapis.com/build-base-image: southamerica-east1-docker.pkg.dev/serverless-runtimes/google-22-full/runtimes/nodejs20
+    run.googleapis.com/build-enable-automatic-updates: 'true'
+    run.googleapis.com/build-environment-variables: '{"GOOGLE_NODE_RUN_SCRIPTS":""}'
+    run.googleapis.com/build-function-target: shopeeGarimpoNow
+    run.googleapis.com/build-image-uri: southamerica-east1-docker.pkg.dev/projetoafiliado-9ff07/gcf-artifacts/projetoafiliado--9ff07__southamerica--east1__shopee_garimpo_now:version_1
+    run.googleapis.com/build-name: projects/977662411284/locations/southamerica-east1/builds/cec5b531-d20f-4c1f-beeb-b5db5915d071
+    run.googleapis.com/build-service-account: projects/projetoafiliado-9ff07/serviceAccounts/977662411284-compute@developer.gserviceaccount.com
+    run.googleapis.com/build-source-location: gs://gcf-v2-sources-977662411284-southamerica-east1/shopeeGarimpoNow/function-source.zip#1780401996190109
+    run.googleapis.com/client-name: cli-firebase
+    run.googleapis.com/custom-audiences: '["https://southamerica-east1-projetoafiliado-9ff07.cloudfunctions.net/shopeeGarimpoNow"]'
+    run.googleapis.com/ingress: all
+    run.googleapis.com/ingress-status: all
+    run.googleapis.com/maxScale: '20'
+    run.googleapis.com/operation-id: 57dd6288-dcc4-4506-a649-1ae9486805e9
+    run.googleapis.com/urls: '["https://shopeegarimponow-977662411284.southamerica-east1.run.app","https://southamerica-east1-projetoafiliado-9ff07.cloudfunctions.net/shopeeGarimpoNow","https://shopeegarimponow-ncjpjjcdya-rj.a.run.app"]'
+    serving.knative.dev/creator: service-977662411284@gcf-admin-robot.iam.gserviceaccount.com
+    serving.knative.dev/lastModifier: service-977662411284@gcf-admin-robot.iam.gserviceaccount.com
+  creationTimestamp: '2026-06-02T11:44:27.114026Z'
+  generation: 4
+  labels:
+    cloud.googleapis.com/location: southamerica-east1
+    firebase-functions-hash: 0eb53372ea0203525323bc829410be730e0d34d3
+    goog-cloudfunctions-runtime: nodejs20
+    goog-drz-cloudfunctions-id: shopeegarimponow
+    goog-drz-cloudfunctions-location: southamerica-east1
+    goog-managed-by: cloudfunctions
+    run.googleapis.com/satisfiesPzs: 'true'
+  name: shopeegarimponow
+  namespace: '977662411284'
+  resourceVersion: AAZTRCcHqgc
+  selfLink: /apis/serving.knative.dev/v1/namespaces/977662411284/services/shopeegarimponow
+  uid: 55b64091-4770-4680-840e-8b07b5b1108a
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/maxScale: '20'
+        cloudfunctions.googleapis.com/trigger-type: HTTP_TRIGGER
+        run.googleapis.com/base-images: '{"worker":"southamerica-east1-docker.pkg.dev/serverless-runtimes/google-22-full/runtimes/nodejs20"}'
+        run.googleapis.com/client-name: cli-firebase
+        run.googleapis.com/secrets: secret-04eae5f7-f302-3d75-930c-7739c13729cb:projects/projetoafiliado-9ff07/secrets/SHOPEE_APP_ID,secret-44336947-cd53-307a-96a5-3a015100e25a:projects/projetoafiliado-9ff07/secrets/SHOPEE_SECRET,secret-7fa18584-ca90-3ed7-afb3-15996caaade2:projects/projetoafiliado-9ff07/secrets/META_SYNC_SECRET
+        run.googleapis.com/startup-cpu-boost: 'true'
+      labels:
+        firebase-functions-hash: 0eb53372ea0203525323bc829410be730e0d34d3
+        goog-drz-cloudfunctions-id: shopeegarimponow
+        goog-drz-cloudfunctions-location: southamerica-east1
+        run.googleapis.com/startupProbeType: Default
+      name: shopeegarimponow-00004-wun
+    spec:
+      containerConcurrency: 80
+      containers:
+      - env:
+        - name: FIREBASE_CONFIG
+          value: '{"projectId":"projetoafiliado-9ff07","storageBucket":"projetoafiliado-9ff07.firebasestorage.app"}'
+        - name: GCLOUD_PROJECT
+          value: projetoafiliado-9ff07
+        - name: EVENTARC_CLOUD_EVENT_SOURCE
+          value: projects/projetoafiliado-9ff07/locations/southamerica-east1/services/shopeeGarimpoNow
+        - name: FUNCTION_TARGET
+          value: shopeeGarimpoNow
+        - name: LOG_EXECUTION_ID
+          value: 'true'
+        - name: FUNCTION_SIGNATURE_TYPE
+          value: http
+        - name: META_SYNC_SECRET
+          valueFrom:
+            secretKeyRef:
+              key: '1'
+              name: secret-7fa18584-ca90-3ed7-afb3-15996caaade2
+        - name: SHOPEE_APP_ID
+          valueFrom:
+            secretKeyRef:
+              key: '3'
+              name: secret-04eae5f7-f302-3d75-930c-7739c13729cb
+        - name: SHOPEE_SECRET
+          valueFrom:
+            secretKeyRef:
+              key: '2'
+              name: secret-44336947-cd53-307a-96a5-3a015100e25a
+        image: southamerica-east1-docker.pkg.dev/projetoafiliado-9ff07/gcf-artifacts/projetoafiliado--9ff07__southamerica--east1__shopee_garimpo_now:version_1
+        name: worker
+        ports:
+        - containerPort: 8080
+          name: http1
+        resources:
+          limits:
+            cpu: '1'
+            memory: 512Mi
+        startupProbe:
+          failureThreshold: 1
+          periodSeconds: 240
+          tcpSocket:
+            port: 8080
+          timeoutSeconds: 240
+      runtimeClassName: run.googleapis.com/linux-base-image-update
+      serviceAccountName: 977662411284-compute@developer.gserviceaccount.com
+      timeoutSeconds: 540
+  traffic:
+  - latestRevision: true
+    percent: 100
+status:
+  address:
+    url: https://shopeegarimponow-ncjpjjcdya-rj.a.run.app
+  conditions:
+  - lastTransitionTime: '2026-06-02T12:07:17.959175Z'
+    status: 'True'
+    type: Ready
+  - lastTransitionTime: '2026-06-02T12:07:11.613192Z'
+    status: 'True'
+    type: ConfigurationsReady
+  - lastTransitionTime: '2026-06-02T12:07:17.919338Z'
+    status: 'True'
+    type: RoutesReady
+  latestCreatedRevisionName: shopeegarimponow-00004-wun
+  latestReadyRevisionName: shopeegarimponow-00004-wun
+  observedGeneration: 4
+  traffic:
+  - latestRevision: true
+    percent: 100
+    revisionName: shopeegarimponow-00004-wun
+  url: https://shopeegarimponow-ncjpjjcdya-rj.a.run.app

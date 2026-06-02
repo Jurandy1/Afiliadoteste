@@ -138,6 +138,18 @@ service cloud.firestore {
       allow write: if false;  // só backend (Admin SDK) escreve
     }
 
+    match /garimpo_produtos/{docId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    match /garimpo_alertas/{docId} {
+      allow read: if true;
+      allow update: if request.resource.data.diff(resource.data).affectedKeys()
+                      .hasOnly(['lido', 'arquivado']);
+      allow create, delete: if false;
+    }
+
     // ── Sync State (cursor do incremental) ──────────────────────
     match /sync_state/{stateId} {
       allow read: if true;

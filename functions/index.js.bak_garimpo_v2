@@ -2172,7 +2172,6 @@ exports.metaDailyIncrement = onSchedule(
 // Helper: chamada Shopee com retry exponencial em rate limit / 5xx
 // ----------------------------------------------------------------------------
 async function shopeeApiCallRetry(query, secrets, maxRetries = 3) {
-  const crypto = require("crypto");
   let lastErr;
   for (let i = 0; i < maxRetries; i++) {
     try {
@@ -2294,13 +2293,13 @@ async function runShopeeGarimpo({ secrets, maxPaginas = 5 }) {
   const hojeStr = new Date(Date.now() - 3 * 3600 * 1000).toISOString().split("T")[0];
   const todosProdutos = [];
 
-  // Pagina productOfferV2 ordenado por comissao (sortType=5)
+  // Pagina productOfferV2 ordenado por comissao (sortType=5) e maior comissao (listType=1)
   for (let page = 1; page <= maxPaginas; page++) {
     const query = `{
-      productOfferV2(sortType: 5, page: ${page}, limit: 50) {
+      productOfferV2(listType: 1, sortType: 5, page: ${page}, limit: 50) {
         nodes {
           itemId shopId productName productLink offerLink imageUrl
-          priceMin priceMax sales ratingStar
+          priceMin priceMax priceDiscountRate sales ratingStar
           commissionRate sellerCommissionRate shopeeCommissionRate commission
           shopName shopType periodStartTime periodEndTime
         }
@@ -2327,7 +2326,7 @@ async function runShopeeGarimpo({ secrets, maxPaginas = 5 }) {
         imagem: String(n.imageUrl || ""),
         preco_min: Number(n.priceMin || 0),
         preco_max: Number(n.priceMax || 0),
-        desconto_pct: 0,
+        desconto_pct: Number(n.priceDiscountRate || 0),
         vendas_shopee: Number(n.sales || 0),
         rating: Number(n.ratingStar || 0),
         comissao_pct: Number(n.commissionRate || 0) * 100,
@@ -2383,79 +2382,56 @@ async function runShopeeGarimpo({ secrets, maxPaginas = 5 }) {
   }
   await flush(true);
 
-  // === ALERTAS DUAS CATEGORIAS V2 ===
-  // Dois buckets de alertas:
-  //   1. ja_vendo:   score >= 95 + ja_vendi=true (sniper - urgencia, comissao subiu em produto seu)
-  //   2. descoberta: score >= 85 + ja_vendi=false + vendas_shopee >= 1000 + comissao_pct >= 8
-  //                  (descoberta - produtos novos com potencial)
-  // Cada bucket tem dedup proprio (7 dias por itemId+categoria) e cap (5/execucao).
-  const candidatosJaVendo = produtosEnriquecidos.filter((p) =>
+  // ALERTAS: score >= 95 e ja_vendi sao "ouro"
+  // Dedup: nao alerta se ja alertou o mesmo itemId nos ultimos 7 dias
+  const alertas = produtosEnriquecidos.filter((p) =>
     p.score_oportunidade >= 95 && p.ja_vendi
   );
-  const candidatosDescoberta = produtosEnriquecidos.filter((p) =>
-    p.score_oportunidade >= 85 &&
-    !p.ja_vendi &&
-    Number(p.vendas_shopee || 0) >= 1000 &&
-    Number(p.comissao_pct || 0) >= 8
-  );
-  // Ordena descobertas por score desc pra pegar os melhores primeiro
-  candidatosDescoberta.sort((a, b) => b.score_oportunidade - a.score_oportunidade);
+  console.log(`[garimpo] candidatos a alerta: ${alertas.length}`);
 
-  console.log(`[garimpo] candidatos: ja_vendo=${candidatosJaVendo.length} descoberta=${candidatosDescoberta.length}`);
-
+  let alertasGravados = 0;
   const seteDiasAtras = new Date(Date.now() - 7 * 86400 * 1000);
-
-  async function gerarAlertas(candidatos, categoria, capMax = 5) {
-    let gravados = 0;
-    for (const p of candidatos) {
-      if (gravados >= capMax) {
-        console.log(`[garimpo] cap atingido pra ${categoria} (${capMax})`);
-        break;
-      }
-      // Dedup: por itemId + categoria, ultimos 7 dias
-      const recentSnap = await db.collection("garimpo_alertas")
-        .where("itemId", "==", p.itemId)
-        .where("categoria", "==", categoria)
-        .where("createdAt", ">=", seteDiasAtras)
-        .limit(1)
-        .get();
-      if (!recentSnap.empty) {
-        console.log(`[garimpo] dedup ${categoria}: pulando ${p.itemId}`);
-        continue;
-      }
-      const ref = db.collection("garimpo_alertas").doc();
-      await ref.set({
-        tipo: "score_alto",
-        categoria, // "ja_vendo" ou "descoberta"
-        itemId: p.itemId,
-        shopId: p.shopId,
-        nome: p.nome,
-        imagem: p.imagem,
-        comissao_pct: p.comissao_pct,
-        comissao_valor: p.comissao_valor,
-        preco_min: p.preco_min,
-        vendas_shopee: p.vendas_shopee,
-        minhas_vendas: p.minhas_vendas || 0,
-        ja_vendi: !!p.ja_vendi,
-        score: p.score_oportunidade,
-        motivos: p.motivos,
-        link_afiliado: p.link_afiliado,
-        shop_name: p.shop_name,
-        lido: false,
-        arquivado: false,
-        createdAt: FieldValue.serverTimestamp(),
-      });
-      gravados++;
+  for (const p of alertas) {
+    // Verifica se ja alertou esse itemId nos ultimos 7 dias
+    const recentSnap = await db.collection("garimpo_alertas")
+      .where("itemId", "==", p.itemId)
+      .where("createdAt", ">=", seteDiasAtras)
+      .limit(1)
+      .get();
+    if (!recentSnap.empty) {
+      console.log(`[garimpo] dedup: pulando ${p.itemId} (ja alertado nos ultimos 7 dias)`);
+      continue;
     }
-    return gravados;
+    // Cap de 5 alertas novos por execucao
+    if (alertasGravados >= 5) {
+      console.log(`[garimpo] cap atingido (5 alertas/execucao)`);
+      break;
+    }
+    const ref = db.collection("garimpo_alertas").doc();
+    await ref.set({
+      tipo: "score_alto",
+      itemId: p.itemId,
+      shopId: p.shopId,
+      nome: p.nome,
+      imagem: p.imagem,
+      comissao_pct: p.comissao_pct,
+      comissao_valor: p.comissao_valor,
+      preco_min: p.preco_min,
+      vendas_shopee: p.vendas_shopee,
+      minhas_vendas: p.minhas_vendas || 0,
+      score: p.score_oportunidade,
+      motivos: p.motivos,
+      link_afiliado: p.link_afiliado,
+      shop_name: p.shop_name,
+      lido: false,
+      arquivado: false,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+    alertasGravados++;
   }
 
-  const alertasJaVendo = await gerarAlertas(candidatosJaVendo, "ja_vendo", 5);
-  const alertasDescoberta = await gerarAlertas(candidatosDescoberta, "descoberta", 5);
-  const alertasGravados = alertasJaVendo + alertasDescoberta;
-
   const duracaoMs = Date.now() - startedAt;
-  console.log(`[garimpo] fim | produtos=${produtosEnriquecidos.length} | alertas=${alertasGravados} (ja_vendo=${alertasJaVendo} descoberta=${alertasDescoberta}) | ${duracaoMs}ms`);
+  console.log(`[garimpo] fim | produtos=${produtosEnriquecidos.length} | alertas=${alertasGravados} | ${duracaoMs}ms`);
 
   return {
     produtos: produtosEnriquecidos.length,
@@ -2507,9 +2483,9 @@ exports.shopeeGarimpoNow = onRequest(
     res.set("Access-Control-Allow-Methods", "POST, OPTIONS");
     res.set("Access-Control-Allow-Headers", "Authorization, Content-Type");
     if (req.method === "OPTIONS") { res.status(204).send(""); return; }
-    const provided = String(req.get("authorization") || "").trim();
-    const secret = (process.env.META_SYNC_SECRET || "").trim();
-    if (!secret || provided !== `Bearer ${secret}`) {
+    const auth = req.headers.authorization || "";
+    const token = auth.replace(/^Bearer\s+/i, "").trim();
+    if (token !== process.env.META_SYNC_SECRET) {
       res.status(401).json({ error: "unauthorized" });
       return;
     }
