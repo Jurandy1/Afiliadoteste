@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useMemo, useState } from "react";
 import { collection, getDocs } from "firebase/firestore";
 import { BarChart3, DollarSign, ShoppingBag, Target, TrendingUp, Ticket } from "lucide-react";
-import { buscarProdutos, dispararBackfillHoje, getComparacaoMensal, getDashboardData, getDashboardKPIs, getDashboardKPIsByPeriod, getPerdasByPeriod, getProdutosByPeriod, getProdutosPagina, getResumoSemana, getSubIdPanelData, getSubIdsByPeriod, getUltimaAtualizacaoHoje } from "../services/repositories/metricsRepository";
+import { buscarProdutos, formatDateBRTYYYYMMDD, garantirDadosAtualizados, getComparacaoMensal, getDashboardData, getDashboardKPIs, getDashboardKPIsByPeriod, getPerdasByPeriod, getProdutosByPeriod, getProdutosPagina, getResumoSemana, getSubIdPanelData, getSubIdsByPeriod, getUltimaAtualizacaoHoje } from "../services/repositories/metricsRepository";
 import { filterProdutos, sortProdutos } from "../domain/attribution/productFilters";
 import { paginate, DEFAULT_PAGE_SIZE } from "../utils/pagination";
 import { fmt, fmtPct, fmtRoas, fmtNum } from "../utils/formatters";
@@ -60,24 +60,24 @@ function readSubIdColumnPrefs() {
   }
 }
 
-const THROTTLE_HOJE_KEY = "ultimo_clique_hoje_ts";
-const THROTTLE_HOJE_DURACAO_MS = 60_000;
+const THROTTLE_REFRESH_KEY = "ultimo_refresh_periodo_ts";
+const THROTTLE_REFRESH_DURACAO_MS = 60_000;
 
-function getThrottleHojeRestante() {
+function getThrottleRefreshRestante() {
   try {
-    const ultimoTs = parseInt(localStorage.getItem(THROTTLE_HOJE_KEY) || "0", 10);
+    const ultimoTs = parseInt(localStorage.getItem(THROTTLE_REFRESH_KEY) || "0", 10);
     if (!ultimoTs) return 0;
     const passado = Date.now() - ultimoTs;
-    const restante = THROTTLE_HOJE_DURACAO_MS - passado;
+    const restante = THROTTLE_REFRESH_DURACAO_MS - passado;
     return restante > 0 ? restante : 0;
   } catch {
     return 0;
   }
 }
 
-function registrarCliqueHoje() {
+function registrarRefreshPeriodo() {
   try {
-    localStorage.setItem(THROTTLE_HOJE_KEY, String(Date.now()));
+    localStorage.setItem(THROTTLE_REFRESH_KEY, String(Date.now()));
   } catch {}
 }
 
@@ -110,8 +110,7 @@ function formatDateLocalYYYYMMDD(date) {
 
 function calcularRangePeriodo(periodo, rangeCustom) {
   console.log("🟢 [calcularRange] periodo:", periodo, "rangeCustom:", rangeCustom);
-  const hoje = new Date();
-  const hojeStr = formatDateLocalYYYYMMDD(hoje);
+  const hojeStr = formatDateBRTYYYYMMDD();
 
   if (periodo === "hoje") {
     const result = { startDate: hojeStr, endDate: hojeStr };
@@ -128,41 +127,43 @@ function calcularRangePeriodo(periodo, rangeCustom) {
     return result;
   }
   if (periodo === "7d") {
-    const d = new Date(hoje);
-    d.setDate(d.getDate() - 7);
-    const result = { startDate: formatDateLocalYYYYMMDD(d), endDate: hojeStr };
+    const d = new Date((Date.now() / 1000 - 10800) * 1000);
+    d.setUTCDate(d.getUTCDate() - 7);
+    const result = { startDate: formatDateBRTYYYYMMDD(d), endDate: hojeStr };
     console.log("🟢 [calcularRange] retornando:", result);
     return result;
   }
   if (periodo === "14d") {
-    const d = new Date(hoje);
-    d.setDate(d.getDate() - 14);
-    const result = { startDate: formatDateLocalYYYYMMDD(d), endDate: hojeStr };
+    const d = new Date((Date.now() / 1000 - 10800) * 1000);
+    d.setUTCDate(d.getUTCDate() - 14);
+    const result = { startDate: formatDateBRTYYYYMMDD(d), endDate: hojeStr };
     console.log("🟢 [calcularRange] retornando:", result);
     return result;
   }
   if (periodo === "30d") {
-    const d = new Date(hoje);
-    d.setDate(d.getDate() - 30);
-    const result = { startDate: formatDateLocalYYYYMMDD(d), endDate: hojeStr };
+    const d = new Date((Date.now() / 1000 - 10800) * 1000);
+    d.setUTCDate(d.getUTCDate() - 30);
+    const result = { startDate: formatDateBRTYYYYMMDD(d), endDate: hojeStr };
     console.log("🟢 [calcularRange] retornando:", result);
     return result;
   }
   if (periodo === "mes_atual") {
-    const inicio = new Date(hoje.getFullYear(), hoje.getMonth(), 1);
+    const brt = new Date((Date.now() / 1000 - 10800) * 1000);
+    const inicio = new Date(Date.UTC(brt.getUTCFullYear(), brt.getUTCMonth(), 1));
     const result = {
-      startDate: formatDateLocalYYYYMMDD(inicio),
+      startDate: formatDateBRTYYYYMMDD(inicio),
       endDate: hojeStr,
     };
     console.log("🟢 [calcularRange] retornando:", result);
     return result;
   }
   if (periodo === "mes_anterior") {
-    const inicio = new Date(hoje.getFullYear(), hoje.getMonth() - 1, 1);
-    const fim = new Date(hoje.getFullYear(), hoje.getMonth(), 0);
+    const brt = new Date((Date.now() / 1000 - 10800) * 1000);
+    const inicio = new Date(Date.UTC(brt.getUTCFullYear(), brt.getUTCMonth() - 1, 1));
+    const fim = new Date(Date.UTC(brt.getUTCFullYear(), brt.getUTCMonth(), 0));
     const result = {
-      startDate: formatDateLocalYYYYMMDD(inicio),
-      endDate: formatDateLocalYYYYMMDD(fim),
+      startDate: formatDateBRTYYYYMMDD(inicio),
+      endDate: formatDateBRTYYYYMMDD(fim),
     };
     console.log("🟢 [calcularRange] retornando:", result);
     return result;
@@ -199,8 +200,9 @@ export default function DashboardPage() {
   const [prodSearchLoading, setProdSearchLoading] = useState(false);
   const [periodoFiltro, setPeriodoFiltro] = useState("all");
   const [rangeCustom, setRangeCustom] = useState({ start: "", end: "" });
-  const [atualizandoHoje, setAtualizandoHoje] = useState(false);
-  const [throttleHojeMs, setThrottleHojeMs] = useState(0);
+  const [atualizandoPeriodo, setAtualizandoPeriodo] = useState(false);
+  const [syncErro, setSyncErro] = useState(null);
+  const [throttleRefreshMs, setThrottleRefreshMs] = useState(0);
   const [ultimaAtualizacao, setUltimaAtualizacao] = useState(null);
   const [comparacaoMensal, setComparacaoMensal] = useState(null);
   const [resumoSemana, setResumoSemana] = useState(null);
@@ -216,7 +218,7 @@ export default function DashboardPage() {
   }, [subCols]);
 
   useEffect(() => {
-    const tick = () => setThrottleHojeMs(getThrottleHojeRestante());
+    const tick = () => setThrottleRefreshMs(getThrottleRefreshRestante());
     tick();
     const interval = setInterval(tick, 1000);
     return () => clearInterval(interval);
@@ -249,18 +251,26 @@ export default function DashboardPage() {
             if (!abortRef.current) setSubIdEstimadasMap({});
           });
       }
-      if (periodoFiltro === "hoje") {
-        setAtualizandoHoje(true);
-        await dispararBackfillHoje();
-        setAtualizandoHoje(false);
-        getUltimaAtualizacaoHoje().then((ts) => {
-          if (!abortRef.current) setUltimaAtualizacao(ts);
-        });
-      }
-
       const range = calcularRangePeriodo(periodoFiltro, rangeCustom);
       const dataInicioBusca = (range && range.startDate) ? range.startDate : "2020-01-01";
       const dataFimBusca = (range && range.endDate) ? range.endDate : "2030-12-31";
+
+      if (periodoFiltro !== "all" && range?.startDate && range?.endDate) {
+        setAtualizandoPeriodo(true);
+        setSyncErro(null);
+        const sync = await garantirDadosAtualizados(range.startDate, range.endDate);
+        if (sync.error === "config_missing") {
+          setSyncErro("Sync não configurado: VITE_BACKFILL_URL ou VITE_BACKFILL_SECRET ausentes.");
+        } else if (sync.error) {
+          setSyncErro(`Falha ao sincronizar com a Shopee (${sync.error}). Exibindo cache local.`);
+        }
+        setAtualizandoPeriodo(false);
+        if (periodoFiltro === "hoje") {
+          getUltimaAtualizacaoHoje().then((ts) => {
+            if (!abortRef.current) setUltimaAtualizacao(ts);
+          });
+        }
+      }
 
       const [kpisFromSumario, produtosPage, subIdsFiltrados, produtosPeriodo, perdas] = await Promise.all([
         getDashboardKPIsByPeriod(dataInicioBusca, dataFimBusca).catch(() => null),
@@ -336,7 +346,7 @@ export default function DashboardPage() {
     } finally {
       if (!abortRef.current) {
         setLoading(false);
-        setAtualizandoHoje(false);
+        setAtualizandoPeriodo(false);
       }
     }
   }, [periodoFiltro, rangeCustom]);
@@ -620,27 +630,27 @@ export default function DashboardPage() {
             <button
               key={opt.id}
               onClick={() => {
-                if (opt.id === "hoje" && throttleHojeMs > 0) {
+                if (opt.id === "hoje" && throttleRefreshMs > 0) {
                   return;
                 }
-                if (opt.id === "hoje") {
-                  registrarCliqueHoje();
-                  setThrottleHojeMs(THROTTLE_HOJE_DURACAO_MS);
+                if (opt.id !== "all") {
+                  registrarRefreshPeriodo();
+                  setThrottleRefreshMs(THROTTLE_REFRESH_DURACAO_MS);
                 }
                 setPeriodoFiltro(opt.id);
                 if (opt.id !== "custom") setRangeCustom({ start: "", end: "" });
               }}
-              disabled={atualizandoHoje}
+              disabled={atualizandoPeriodo}
               className={
-                opt.id === "hoje" && throttleHojeMs > 0
+                opt.id === "hoje" && throttleRefreshMs > 0
                   ? "px-3 py-1 rounded text-sm bg-gray-300 text-gray-500 cursor-not-allowed"
                   : periodoFiltro === opt.id
                   ? "px-3 py-1 rounded text-sm bg-blue-600 text-white"
                   : "px-3 py-1 rounded text-sm bg-gray-100 text-gray-700 hover:bg-gray-200"
               }
             >
-              {opt.id === "hoje" && throttleHojeMs > 0
-                ? `⏰ ${Math.ceil(throttleHojeMs / 1000)}s`
+              {opt.id === "hoje" && throttleRefreshMs > 0
+                ? `⏰ ${Math.ceil(throttleRefreshMs / 1000)}s`
                 : opt.label}
             </button>
           ))}
@@ -682,7 +692,7 @@ export default function DashboardPage() {
                 setPeriodoFiltro("custom");
               }
             }}
-            disabled={!rangeCustom.start || !rangeCustom.end || atualizandoHoje}
+            disabled={!rangeCustom.start || !rangeCustom.end || atualizandoPeriodo}
             className="px-3 py-1 rounded text-sm bg-green-600 text-white hover:bg-green-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
           >
             Aplicar
@@ -700,15 +710,21 @@ export default function DashboardPage() {
           )}
         </div>
 
-        {atualizandoHoje && (
+        {atualizandoPeriodo && (
           <div className="p-3 bg-blue-50 border border-blue-200 rounded text-sm text-blue-800">
-            ⏳ Atualizando dados de hoje... (pode levar até 60 segundos)
+            ⏳ Sincronizando dados da Shopee para o período selecionado... (pode levar até 2 minutos)
           </div>
         )}
 
-        {periodoFiltro !== "all" && !atualizandoHoje && (
+        {syncErro && !atualizandoPeriodo && (
+          <div className="p-3 bg-red-50 border border-red-200 rounded text-sm text-red-800">
+            ⚠️ {syncErro}
+          </div>
+        )}
+
+        {periodoFiltro !== "all" && !atualizandoPeriodo && !syncErro && (
           <div className="p-3 bg-yellow-50 border border-yellow-200 rounded text-sm text-yellow-800">
-            ⚠️ No modo filtrado, o gasto de Meta Ads/Pinterest não está incluído. KPIs de Lucro, ROI e ROAS ficam zerados temporariamente. Os demais valores (Comissão, Vendas, Faturamento, Ticket Médio) refletem apenas o período selecionado.
+            ℹ️ Os valores são sincronizados automaticamente com a API Shopee ao filtrar um período. Dados com mais de 7 dias são considerados estáveis e só atualizam se necessário.
           </div>
         )}
       </div>

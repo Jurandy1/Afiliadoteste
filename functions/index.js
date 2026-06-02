@@ -440,10 +440,34 @@ function buildShopeeQuery(startTs, endTs, scrollId) {
 }
 
 function shopeeClassifyStatus(rawStatus) {
-  const s = String(rawStatus || "").toUpperCase();
+  const s = String(rawStatus || "").toUpperCase().trim();
   if (s === "COMPLETED" || s.includes("CONCLU") || s.includes("COMPLET")) return "concluida";
-  if (s === "CANCELLED" || s === "CANCELED" || s.includes("CANCEL")) return "cancelada";
+  if (shopeeIsStatusPerda(s)) return "cancelada";
   return "pendente";
+}
+
+/** Status que a Shopee considera perda definitiva — NÃO inclui UNPAID/PENDING. */
+function shopeeIsStatusPerda(rawStatus) {
+  const s = String(rawStatus || "").toUpperCase().trim();
+  if (!s) return false;
+
+  const pendentes = new Set([
+    "UNPAID", "PENDING", "PROCESSING", "WAITING_PAYMENT",
+    "TO_CONFIRM", "TO_SHIP", "SHIPPING", "SHIPPED",
+    "COMPLETED", "PAID", "READY_TO_SHIP",
+  ]);
+  if (pendentes.has(s)) return false;
+
+  const perdas = new Set([
+    "CANCELLED", "CANCELED", "FAILED", "FRAUD", "EXPIRED",
+    "REFUNDED", "REJECTED", "VOID", "INVALID",
+  ]);
+  if (perdas.has(s)) return true;
+
+  if (s.includes("CANCEL")) return true;
+  if (s.includes("FRAUD")) return true;
+  if (s.includes("REFUND")) return true;
+  return false;
 }
 
 function shopeeNormalizeSubId(raw) {
@@ -623,9 +647,9 @@ function agruparPorData(nodes) {
   const subIdDayMap = {};
   const produtoDayMap = {};
   const perdas = [];
-  const statusIgnorados = ["CANCELLED", "CANCELED", "FAILED", "FRAUD", "EXPIRED"];
 
   for (const node of nodes) {
+    const conversionId = String(node.conversionId || "").trim();
     const orders = node.orders || [];
     const baseSubIdRaw = node.utmContent || "";
     const baseSubIdNorm = shopeeNormalizeSubId(baseSubIdRaw);
@@ -639,11 +663,12 @@ function agruparPorData(nodes) {
       const date = dataHMBrasilia.toISOString().split("T")[0];
 
       const items = ord.items || [];
+      const orderId = String(ord.orderId || "").trim();
       const statusPedidoRaw = ord.orderStatus || node.conversionStatus || "";
-      const statusPedidoUpper = String(statusPedidoRaw).toUpperCase();
-      const isIgnorado = statusIgnorados.some((s) => statusPedidoUpper.includes(s));
-      if (isIgnorado) {
+      const isPerda = shopeeIsStatusPerda(statusPedidoRaw);
+      if (isPerda) {
         for (const it of items) {
+          const itemId = String(it.itemId || "").trim();
           const qty = parseInt(it.qty, 10) || 1;
           const price = parseFloat(it.itemPrice || "0") || 0;
           const actual = parseFloat(it.actualAmount || "0") || 0;
@@ -653,6 +678,9 @@ function agruparPorData(nodes) {
           perdas.push({
             data: date,
             status: statusPedidoRaw,
+            conversionId,
+            orderId,
+            itemId,
             faturamento_perdido: parseFloat(gmv) || 0,
             comissao_perdida: parseFloat(comissaoEstimada) || 0,
             timestamp: Date.now(),
@@ -769,18 +797,107 @@ function formatDateBRTYYYYMMDDNow() {
   return new Date((Date.now() / 1000 - 10800) * 1000).toISOString().split("T")[0];
 }
 
-async function gravarShopeeDaily(dayMap, state, flush, todayOnly = false, mode = "replace") {
+function brtDateToUnixStart(dateStr) {
+  return Math.floor(Date.parse(`${dateStr}T00:00:00-03:00`) / 1000);
+}
+
+function brtDateToUnixEnd(dateStr) {
+  return Math.floor(Date.parse(`${dateStr}T23:59:59-03:00`) / 1000);
+}
+
+function brtYesterdayYYYYMMDD() {
+  const hoje = formatDateBRTYYYYMMDDNow();
+  const [y, m, d] = hoje.split("-").map(Number);
+  const prev = new Date(Date.UTC(y, m - 1, d - 1));
+  return `${prev.getUTCFullYear()}-${String(prev.getUTCMonth() + 1).padStart(2, "0")}-${String(prev.getUTCDate()).padStart(2, "0")}`;
+}
+
+function listDatesBetween(startStr, endStr) {
+  const dates = [];
+  let cur = startStr;
+  while (cur <= endStr) {
+    dates.push(cur);
+    const [y, m, d] = cur.split("-").map(Number);
+    const nextDt = new Date(Date.UTC(y, m - 1, d + 1));
+    cur = `${nextDt.getUTCFullYear()}-${String(nextDt.getUTCMonth() + 1).padStart(2, "0")}-${String(nextDt.getUTCDate()).padStart(2, "0")}`;
+  }
+  return dates;
+}
+
+function daysBetweenDates(dateStr, refStr) {
+  const a = Date.parse(`${dateStr}T12:00:00-03:00`);
+  const b = Date.parse(`${refStr}T12:00:00-03:00`);
+  return Math.round((b - a) / 86400000);
+}
+
+/** @returns {null | { type: 'today' } | { type: 'dates', dates: Set<string> }} */
+function normalizeDateFilter(dateFilter, todayOnly = false) {
+  if (dateFilter) return dateFilter;
+  if (todayOnly) return { type: "today" };
+  return null;
+}
+
+function passesDateFilter(date, dateFilter) {
+  if (!dateFilter) return true;
+  if (dateFilter.type === "today") return date === formatDateBRTYYYYMMDDNow();
+  if (dateFilter.type === "dates") return dateFilter.dates.has(date);
+  return true;
+}
+
+function getRefreshThrottleMin(dateStr) {
+  const hoje = formatDateBRTYYYYMMDDNow();
+  const diff = daysBetweenDates(dateStr, hoje);
+  if (diff <= 0) return 5;
+  if (diff <= 2) return 30;
+  if (diff <= 7) return 120;
+  return 360;
+}
+
+async function checkRefreshThrottle(dates) {
+  const now = Date.now();
+  const skipped = [];
+  const toRefresh = [];
+  for (const date of dates) {
+    const snap = await db.collection("sync_state").doc(`refresh_${date}`).get().catch(() => null);
+    const lastMs = snap?.exists ? (snap.data()?.lastRefreshAt?.toMillis?.() || 0) : 0;
+    const ageMin = lastMs > 0 ? (now - lastMs) / 60000 : Infinity;
+    const throttle = getRefreshThrottleMin(date);
+    if (ageMin < throttle) skipped.push(date);
+    else toRefresh.push(date);
+  }
+  return { skipped, toRefresh };
+}
+
+async function markRefreshDone(dates, stats = {}) {
+  for (const date of dates) {
+    await db.collection("sync_state").doc(`refresh_${date}`).set({
+      lastRefreshAt: FieldValue.serverTimestamp(),
+      lastNodes: stats.nodes || 0,
+      lastPedidos: stats.pedidos || 0,
+    }, { merge: true });
+  }
+}
+
+async function limparLogPerdasPorDatas(dates, state, flush) {
+  if (!dates || dates.size === 0) return 0;
+  let deleted = 0;
+  for (const dateStr of dates) {
+    const snap = await db.collection("log_perdas").where("data", "==", dateStr).get();
+    for (const docSnap of snap.docs) {
+      state.batch.delete(docSnap.ref);
+      state.count++;
+      deleted++;
+      await flush();
+    }
+  }
+  return deleted;
+}
+
+async function gravarShopeeDaily(dayMap, state, flush, dateFilter = null, mode = "replace") {
   let gravados = 0;
-  
-  // Se todayOnly=true, só grava o doc do dia atual (BRT).
-  // Isso previne que backfills com janela curta destruam dias anteriores
-  // com dados parciais.
-  const hojeBRT = formatDateBRTYYYYMMDDNow();
 
   for (const [date, totais] of Object.entries(dayMap)) {
-    // Pula dias passados quando estamos em modo "todayOnly"
-    if (todayOnly && date !== hojeBRT) {
-      console.log(`[gravarShopeeDaily] todayOnly: pulando ${date} (não é hoje ${hojeBRT})`);
+    if (!passesDateFilter(date, dateFilter)) {
       continue;
     }
     const ref = db.collection("shopee_daily").doc(date);
@@ -814,12 +931,11 @@ async function gravarShopeeDaily(dayMap, state, flush, todayOnly = false, mode =
   return gravados;
 }
 
-async function gravarSubIdDaily(subIdDayMap, state, flush, todayOnly = false, mode = "replace") {
+async function gravarSubIdDaily(subIdDayMap, state, flush, dateFilter = null, mode = "replace") {
   let gravados = 0;
-  const hojeBRT = formatDateBRTYYYYMMDDNow();
 
   for (const [docId, totais] of Object.entries(subIdDayMap)) {
-    if (todayOnly && totais.data !== hojeBRT) continue;
+    if (!passesDateFilter(totais.data, dateFilter)) continue;
 
     const ref = db.collection("subid_daily").doc(docId);
 
@@ -851,12 +967,11 @@ async function gravarSubIdDaily(subIdDayMap, state, flush, todayOnly = false, mo
   return gravados;
 }
 
-async function gravarProdutoDaily(produtoDayMap, state, flush, todayOnly = false, mode = "replace") {
+async function gravarProdutoDaily(produtoDayMap, state, flush, dateFilter = null, mode = "replace") {
   let gravados = 0;
-  const hojeBRT = formatDateBRTYYYYMMDDNow();
 
   for (const [docId, totais] of Object.entries(produtoDayMap)) {
-    if (todayOnly && totais.data !== hojeBRT) continue;
+    if (!passesDateFilter(totais.data, dateFilter)) continue;
 
     const ref = db.collection("produto_daily").doc(docId);
     if (mode === "increment") {
@@ -884,14 +999,19 @@ async function gravarProdutoDaily(produtoDayMap, state, flush, todayOnly = false
   return gravados;
 }
 
-async function gravarLogPerdas(perdas, state, flush, todayOnly = false) {
+async function gravarLogPerdas(perdas, state, flush, dateFilter = null) {
   if (!perdas || perdas.length === 0) return 0;
   let gravados = 0;
-  const hojeBRT = formatDateBRTYYYYMMDDNow();
 
   for (const row of perdas) {
-    if (todayOnly && row.data !== hojeBRT) continue;
-    const ref = db.collection("log_perdas").doc();
+    if (!passesDateFilter(row.data, dateFilter)) continue;
+    const docId = [
+      row.data,
+      row.conversionId || "nc",
+      row.orderId || "no",
+      row.itemId || "ni",
+    ].join("_").replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 150);
+    const ref = db.collection("log_perdas").doc(docId);
     state.batch.set(ref, row);
     state.count++;
     gravados++;
@@ -1011,11 +1131,22 @@ async function getNovasConversoes(db, allNodes) {
   };
 }
 
-async function runShopeeSync({ startTs, endTs, label, updateCursor = false, forceReplace = false }) {
+async function runShopeeSync({
+  startTs,
+  endTs,
+  label,
+  updateCursor = false,
+  forceReplace = false,
+  updateDaily = false,
+  dateFilter = null,
+  dailyOnly = false,
+  todayOnly = false,
+}) {
   const startedAt = Date.now();
   const importRef = db.collection("importacoes").doc();
   const importacaoId = importRef.id;
-  console.log(`[shopee] início ${label} | range ${startTs} → ${endTs} | importacaoId=${importacaoId}`);
+  const resolvedDateFilter = normalizeDateFilter(dateFilter, todayOnly);
+  console.log(`[shopee] início ${label} | range ${startTs} → ${endTs} | importacaoId=${importacaoId} | dailyOnly=${dailyOnly}`);
 
   const { allNodes, pageCount } = await shopeePullRange(startTs, endTs);
   const { prodMap, subIdMap } = shopeeAggregate(allNodes);
@@ -1030,56 +1161,58 @@ async function runShopeeSync({ startTs, endTs, label, updateCursor = false, forc
   };
 
   let prodsGravados = 0;
-  for (const prod of Object.values(prodMap)) {
-    const docId = (prod.id_item && String(prod.id_item).trim())
-      ? `item_${prod.id_item}`
-      : `name_${prod.nome.toLowerCase().replace(/[^a-z0-9]/g, "_").slice(0, 80)}`;
+  if (!dailyOnly) {
+    for (const prod of Object.values(prodMap)) {
+      const docId = (prod.id_item && String(prod.id_item).trim())
+        ? `item_${prod.id_item}`
+        : `name_${prod.nome.toLowerCase().replace(/[^a-z0-9]/g, "_").slice(0, 80)}`;
 
-    const ref = db.collection("produtos").doc(docId);
-    state.batch.set(ref, {
-      ...prod,
-      sub_ids: Array.from(prod.sub_ids),
-      gmv: prod.gmv_total,
-      fonte: "shopee_api_backend",
-      importacaoId,
-      updatedAt: FieldValue.serverTimestamp(),
-      importadoEm: FieldValue.serverTimestamp(),
-    }, { merge: true });
-    state.count++; prodsGravados++;
-    await flush();
-  }
-
-  let novosNodes = allNodes || [];
-  let novosConversionIds = [];
-  if (!forceReplace) {
-    const { conversionIds, conversoesJaProcessadas, novosNodes: nn, novosConversionIds: nc } = await getNovasConversoes(db, allNodes);
-    console.log(`[shopee] dedup: ${conversoesJaProcessadas.size} conversões já processadas de ${conversionIds.length} totais`);
-    novosNodes = nn;
-    novosConversionIds = nc;
-  } else {
-    const set = new Set();
-    for (const node of allNodes || []) {
-      const cid = String(node?.conversionId || "").trim();
-      if (cid) set.add(cid);
+      const ref = db.collection("produtos").doc(docId);
+      state.batch.set(ref, {
+        ...prod,
+        sub_ids: Array.from(prod.sub_ids),
+        gmv: prod.gmv_total,
+        fonte: "shopee_api_backend",
+        importacaoId,
+        updatedAt: FieldValue.serverTimestamp(),
+        importadoEm: FieldValue.serverTimestamp(),
+      }, { merge: true });
+      state.count++; prodsGravados++;
+      await flush();
     }
-    novosConversionIds = [...set];
   }
 
-  for (const cid of novosConversionIds) {
-    const ref = db.collection("conversoes_processadas").doc(cid);
-    state.batch.set(ref, {
-      processadoEm: FieldValue.serverTimestamp(),
-      importacaoId,
-    }, { merge: true });
-    state.count++;
-    await flush();
+  let novosConversionIds = [];
+  if (!dailyOnly) {
+    if (!forceReplace) {
+      const { conversionIds, conversoesJaProcessadas, novosNodes: nn, novosConversionIds: nc } = await getNovasConversoes(db, allNodes);
+      console.log(`[shopee] dedup: ${conversoesJaProcessadas.size} conversões já processadas de ${conversionIds.length} totais`);
+      novosConversionIds = nc;
+    } else {
+      const set = new Set();
+      for (const node of allNodes || []) {
+        const cid = String(node?.conversionId || "").trim();
+        if (cid) set.add(cid);
+      }
+      novosConversionIds = [...set];
+    }
+
+    for (const cid of novosConversionIds) {
+      const ref = db.collection("conversoes_processadas").doc(cid);
+      state.batch.set(ref, {
+        processadoEm: FieldValue.serverTimestamp(),
+        importacaoId,
+      }, { merge: true });
+      state.count++;
+      await flush();
+    }
   }
 
   if (!(allNodes.length === 0 && label === "incremental_cursor")) {
     state.batch.set(importRef, {
       tipo: "shopee_venda",
       fonte: "api_backend",
-      modo: "append",
+      modo: dailyOnly ? "daily_only" : "append",
       periodo: label,
       rangeStart: startTs,
       rangeEnd: endTs,
@@ -1108,25 +1241,52 @@ async function runShopeeSync({ startTs, endTs, label, updateCursor = false, forc
     state.count++;
   }
 
-  const ativaDaily =
-    label === "reconcile_30d" || label.startsWith("backfill_");
-
   let dailyGravados = 0;
   let subIdDailyGravados = 0;
   let produtoDailyGravados = 0;
   let perdasGravadas = 0;
-  if (ativaDaily) {
-    const isTodayOnly = label === "backfill_today_only";
+  let perdasRemovidas = 0;
+  if (updateDaily) {
     const { dayMap, subIdDayMap, produtoDayMap, perdas } = agruparPorData(allNodes);
-    dailyGravados = await gravarShopeeDaily(dayMap, state, flush, isTodayOnly, "replace");
-    subIdDailyGravados = await gravarSubIdDaily(subIdDayMap, state, flush, isTodayOnly, "replace");
-    produtoDailyGravados = await gravarProdutoDaily(produtoDayMap, state, flush, isTodayOnly, "replace");
-    perdasGravadas = await gravarLogPerdas(perdas, state, flush, isTodayOnly);
+
+    const datesToReplace = resolvedDateFilter?.type === "dates"
+      ? resolvedDateFilter.dates
+      : resolvedDateFilter?.type === "today"
+        ? new Set([formatDateBRTYYYYMMDDNow()])
+        : new Set(Object.keys(dayMap));
+
+    if (datesToReplace.size > 0) {
+      perdasRemovidas = await limparLogPerdasPorDatas(datesToReplace, state, flush);
+    }
+
+    dailyGravados = await gravarShopeeDaily(dayMap, state, flush, resolvedDateFilter, "replace");
+    subIdDailyGravados = await gravarSubIdDaily(subIdDayMap, state, flush, resolvedDateFilter, "replace");
+    produtoDailyGravados = await gravarProdutoDaily(produtoDayMap, state, flush, resolvedDateFilter, "replace");
+    perdasGravadas = await gravarLogPerdas(perdas, state, flush, resolvedDateFilter);
+
+    if (resolvedDateFilter?.type === "dates") {
+      const pedidosPorData = {};
+      for (const [date, totais] of Object.entries(dayMap)) {
+        if (resolvedDateFilter.dates.has(date)) {
+          pedidosPorData[date] = totais.pedidos || 0;
+        }
+      }
+      await markRefreshDone([...resolvedDateFilter.dates], {
+        nodes: allNodes.length,
+        pedidos: Object.values(pedidosPorData).reduce((s, n) => s + n, 0),
+      });
+    } else if (resolvedDateFilter?.type === "today") {
+      const hoje = formatDateBRTYYYYMMDDNow();
+      await markRefreshDone([hoje], {
+        nodes: allNodes.length,
+        pedidos: dayMap[hoje]?.pedidos || 0,
+      });
+    }
   }
 
   await flush(true);
 
-  console.log(`[shopee] fim ${label} | nodes=${allNodes.length} | produtos=${prodsGravados} | shopee_daily=${dailyGravados} | subid_daily=${subIdDailyGravados} | produto_daily=${produtoDailyGravados} | log_perdas=${perdasGravadas} | ${Date.now() - startedAt}ms`);
+  console.log(`[shopee] fim ${label} | nodes=${allNodes.length} | produtos=${prodsGravados} | shopee_daily=${dailyGravados} | subid_daily=${subIdDailyGravados} | produto_daily=${produtoDailyGravados} | log_perdas=${perdasGravadas} (removidas=${perdasRemovidas}) | ${Date.now() - startedAt}ms`);
 
   return {
     importacaoId,
@@ -1136,6 +1296,7 @@ async function runShopeeSync({ startTs, endTs, label, updateCursor = false, forc
     subIdDaily: subIdDailyGravados,
     produtoDaily: produtoDailyGravados,
     perdas: perdasGravadas,
+    perdasRemovidas,
     paginas: pageCount,
   };
 }
@@ -1193,10 +1354,45 @@ exports.shopeeDailyReconcile = onSchedule(
         endTs: now,
         label: "reconcile_30d",
         updateCursor: false, // reconcile não mexe no cursor do incremental
+        updateDaily: true,
+        dailyOnly: true,
       });
       await recalcularSumario(db);
     } catch (e) {
       console.error("[shopee] reconcile falhou:", e?.message || e);
+    }
+  },
+);
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  2b) Rolling reconcile — a cada 2h, só hoje + ontem (baixo custo)
+// ═══════════════════════════════════════════════════════════════════════════
+exports.shopeeRecentDaysSync = onSchedule(
+  {
+    schedule: "0 */2 * * *",
+    timeZone: "America/Sao_Paulo",
+    secrets: ["SHOPEE_APP_ID", "SHOPEE_SECRET"],
+    timeoutSeconds: 300,
+    memory: "512MiB",
+  },
+  async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const hoje = formatDateBRTYYYYMMDDNow();
+    const ontem = brtYesterdayYYYYMMDD();
+    const start = brtDateToUnixStart(ontem);
+
+    try {
+      await runShopeeSync({
+        startTs: start,
+        endTs: now,
+        label: "recent_2d",
+        updateCursor: false,
+        updateDaily: true,
+        dailyOnly: true,
+        dateFilter: { type: "dates", dates: new Set([ontem, hoje]) },
+      });
+    } catch (e) {
+      console.error("[shopee] recent_2d falhou:", e?.message || e);
     }
   },
 );
@@ -1231,6 +1427,10 @@ exports.shopeeBackfillNow = onRequest(
     }
     try {
       const todayOnly = req.query.todayOnly === "1";
+      const singleDate = String(req.query.date || "").trim();
+      const startDateParam = String(req.query.startDate || "").trim();
+      const endDateParam = String(req.query.endDate || "").trim();
+      const skipThrottle = req.query.force === "1";
       const rawDays = parseInt(req.query.days || (todayOnly ? "0" : "90"), 10);
       const days = todayOnly
         ? Math.max(0, Math.min(365, Number.isFinite(rawDays) ? rawDays : 0))
@@ -1246,14 +1446,63 @@ exports.shopeeBackfillNow = onRequest(
         return Math.floor(ms / 1000);
       };
 
-      const start = todayOnly ? startOfTodayBrtUnix() : (now - days * 86400);
-      const isFullBackfill = !todayOnly;
+      let start;
+      let end = now;
+      let dateFilter = null;
+      let label;
+      let isFullBackfill = false;
+      let dailyOnly = true;
+
+      if (singleDate && /^\d{4}-\d{2}-\d{2}$/.test(singleDate)) {
+        const { skipped, toRefresh } = skipThrottle
+          ? { skipped: [], toRefresh: [singleDate] }
+          : await checkRefreshThrottle([singleDate]);
+        if (toRefresh.length === 0) {
+          res.json({ ok: true, skipped: true, throttled: skipped, message: "refresh_recente" });
+          return;
+        }
+        start = brtDateToUnixStart(singleDate);
+        end = brtDateToUnixEnd(singleDate);
+        dateFilter = { type: "dates", dates: new Set(toRefresh) };
+        label = `refresh_day_${singleDate}`;
+      } else if (startDateParam && endDateParam
+        && /^\d{4}-\d{2}-\d{2}$/.test(startDateParam)
+        && /^\d{4}-\d{2}-\d{2}$/.test(endDateParam)) {
+        const allDates = listDatesBetween(startDateParam, endDateParam);
+        const { skipped, toRefresh } = skipThrottle
+          ? { skipped: [], toRefresh: allDates }
+          : await checkRefreshThrottle(allDates);
+        if (toRefresh.length === 0) {
+          res.json({ ok: true, skipped: true, throttled: skipped, message: "refresh_recente" });
+          return;
+        }
+        start = brtDateToUnixStart(toRefresh[0]);
+        const hoje = formatDateBRTYYYYMMDDNow();
+        const lastDate = toRefresh[toRefresh.length - 1];
+        end = lastDate === hoje ? now : brtDateToUnixEnd(lastDate);
+        dateFilter = { type: "dates", dates: new Set(toRefresh) };
+        label = `refresh_range_${startDateParam}_${endDateParam}`;
+      } else if (todayOnly) {
+        start = startOfTodayBrtUnix();
+        label = "backfill_today_only";
+        dateFilter = { type: "today" };
+      } else {
+        start = now - days * 86400;
+        label = `backfill_${days}d`;
+        isFullBackfill = true;
+        dailyOnly = false;
+      }
+
       const result = await runShopeeSync({
         startTs: start,
-        endTs: now,
-        label: todayOnly ? "backfill_today_only" : `backfill_${days}d`,
-        updateCursor: true, // backfill define o cursor inicial
+        endTs: end,
+        label,
+        updateCursor: isFullBackfill,
         forceReplace: isFullBackfill,
+        updateDaily: true,
+        dateFilter,
+        dailyOnly,
+        todayOnly,
       });
       res.json(result);
     } catch (e) {

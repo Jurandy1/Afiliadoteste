@@ -26,6 +26,50 @@ function formatDateLocalYYYYMMDD(date) {
   return `${ano}-${mes}-${dia}`;
 }
 
+/** Data de hoje no fuso BRT (UTC-3), igual ao backend Shopee. */
+export function formatDateBRTYYYYMMDD(date = new Date()) {
+  const ms = date instanceof Date ? date.getTime() : new Date(date).getTime();
+  return new Date((ms / 1000 - 10800) * 1000).toISOString().split("T")[0];
+}
+
+async function dispararBackfillLegacyToday() {
+  const url = import.meta.env.VITE_BACKFILL_URL;
+  const secret = import.meta.env.VITE_BACKFILL_SECRET;
+
+  if (!url || !secret) {
+    return { ok: false, error: "config_missing" };
+  }
+
+  try {
+    const ctrl = new AbortController();
+    const timeoutId = setTimeout(() => ctrl.abort(), 120000);
+
+    const resp = await fetch(`${url}?days=0&todayOnly=1`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        "Content-Length": "0",
+      },
+      body: "",
+      signal: ctrl.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!resp.ok) {
+      return { ok: false, error: `http_${resp.status}` };
+    }
+
+    const json = await resp.json();
+    return { ok: true, mode: "todayOnly", result: json };
+  } catch (err) {
+    if (err.name === "AbortError") {
+      return { ok: true, timeout: true, mode: "todayOnly" };
+    }
+    return { ok: false, error: err.message };
+  }
+}
+
 export async function getDashboardKPIs() {
   const ref = doc(db, "sumarios", "dashboard");
   const snap = await getDoc(ref);
@@ -261,32 +305,32 @@ export async function getDashboardKPIsByPeriod(startDate, endDate) {
 }
 
 /**
- * Dispara o shopeeBackfillNow no backend pra atualizar o doc daily de hoje
- * antes de ler.
+ * Dispara refresh de um período na API Shopee (só os dias solicitados).
+ * Usa startDate/endDate para puxar apenas a janela necessária — baixo custo.
  *
- * Usado quando o cliente clica em "Hoje" — força atualização do dia atual,
- * já que o reconcile só roda 1x/dia (4h BRT).
- *
- * Quando a função retorna (sucesso ou timeout), o doc /shopee_daily/{hoje}
- * já está (ou estará em breve) atualizado.
- *
- * @returns {Promise<{ok: boolean, error?: string}>}
+ * @returns {Promise<{ok: boolean, skipped?: boolean, error?: string, timeout?: boolean}>}
  */
-export async function dispararBackfillHoje() {
+export async function dispararBackfillPeriodo(startDate, endDate, { force = false } = {}) {
   const url = import.meta.env.VITE_BACKFILL_URL;
   const secret = import.meta.env.VITE_BACKFILL_SECRET;
 
   if (!url || !secret) {
-    console.warn("[dispararBackfillHoje] VITE_BACKFILL_URL ou VITE_BACKFILL_SECRET não configurados");
+    console.warn("[dispararBackfillPeriodo] VITE_BACKFILL_URL ou VITE_BACKFILL_SECRET não configurados");
     return { ok: false, error: "config_missing" };
   }
 
-  try {
-    // Timeout de 90s — função pode demorar até 60s, damos 30s de margem
-    const ctrl = new AbortController();
-    const timeoutId = setTimeout(() => ctrl.abort(), 90000);
+  if (!startDate || !endDate) {
+    return { ok: false, error: "missing_dates" };
+  }
 
-    const resp = await fetch(`${url}?days=0&todayOnly=1`, {
+  const params = new URLSearchParams({ startDate, endDate });
+  if (force) params.set("force", "1");
+
+  try {
+    const ctrl = new AbortController();
+    const timeoutId = setTimeout(() => ctrl.abort(), 120000);
+
+    const resp = await fetch(`${url}?${params.toString()}`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,
@@ -299,24 +343,150 @@ export async function dispararBackfillHoje() {
     clearTimeout(timeoutId);
 
     if (!resp.ok) {
-      console.warn(`[dispararBackfillHoje] HTTP ${resp.status}`);
+      console.warn(`[dispararBackfillPeriodo] HTTP ${resp.status}`);
       return { ok: false, error: `http_${resp.status}` };
     }
 
     const json = await resp.json();
-    console.log("[dispararBackfillHoje] OK:", json);
+    if (json.skipped) {
+      return { ok: true, skipped: true };
+    }
+    console.log("[dispararBackfillPeriodo] OK:", json);
     return { ok: true };
   } catch (err) {
-    // Timeout do AbortController OU outro erro de rede
     if (err.name === "AbortError") {
-      console.warn("[dispararBackfillHoje] Timeout de 90s — função pode estar rodando em background");
-      // Mesmo com timeout, a função geralmente termina em background
-      // então retornamos ok=true com flag de timeout
+      console.warn("[dispararBackfillPeriodo] Timeout — função pode estar rodando em background");
       return { ok: true, timeout: true };
     }
-    console.error("[dispararBackfillHoje] Erro:", err);
+    console.error("[dispararBackfillPeriodo] Erro:", err);
     return { ok: false, error: err.message };
   }
+}
+
+/**
+ * Dispara o shopeeBackfillNow para o dia de hoje (BRT).
+ * Usa todayOnly=1 (compatível com backend em produção) e, se falhar,
+ * tenta startDate/endDate (backend novo).
+ */
+export async function dispararBackfillHoje({ force = true } = {}) {
+  const hojeStr = formatDateBRTYYYYMMDD();
+
+  const legacy = await dispararBackfillLegacyToday();
+  if (legacy.ok) return legacy;
+
+  return dispararBackfillPeriodo(hojeStr, hojeStr, { force });
+}
+
+function listDatesBetween(startStr, endStr) {
+  const dates = [];
+  let cur = startStr;
+  while (cur <= endStr) {
+    dates.push(cur);
+    const [y, m, d] = cur.split("-").map(Number);
+    const nextDt = new Date(Date.UTC(y, m - 1, d + 1));
+    cur = `${nextDt.getUTCFullYear()}-${String(nextDt.getUTCMonth() + 1).padStart(2, "0")}-${String(nextDt.getUTCDate()).padStart(2, "0")}`;
+  }
+  return dates;
+}
+
+function daysBetweenDates(dateStr, refStr) {
+  const a = Date.parse(`${dateStr}T12:00:00-03:00`);
+  const b = Date.parse(`${refStr}T12:00:00-03:00`);
+  return Math.round((b - a) / 86400000);
+}
+
+function getStaleThresholdMs(dateStr) {
+  const hojeStr = formatDateBRTYYYYMMDD();
+  const diff = daysBetweenDates(dateStr, hojeStr);
+  if (diff <= 0) return 5 * 60 * 1000;
+  if (diff <= 2) return 3 * 60 * 60 * 1000;
+  if (diff <= 7) return 12 * 60 * 60 * 1000;
+  return 7 * 24 * 60 * 60 * 1000;
+}
+
+function isDocVazio(data) {
+  const pedidos = Number(data?.pedidos || 0);
+  const vendas = Number(data?.vendas || 0);
+  const fat = Number(data?.faturamento ?? data?.gmv_total ?? 0);
+  return pedidos === 0 && vendas === 0 && fat === 0;
+}
+
+/**
+ * Verifica quais dias do período precisam de refresh na API Shopee.
+ * 1 read por dia em shopee_daily — barato no Firestore.
+ */
+export async function getDatasDesatualizadas(startDate, endDate) {
+  const dates = listDatesBetween(startDate, endDate);
+  const stale = [];
+
+  await Promise.all(dates.map(async (dateStr) => {
+    try {
+      const snap = await getDoc(doc(db, "shopee_daily", dateStr));
+      if (!snap.exists()) {
+        stale.push(dateStr);
+        return;
+      }
+      const data = snap.data() || {};
+      const hojeStr = formatDateBRTYYYYMMDD();
+      if (dateStr === hojeStr && isDocVazio(data)) {
+        stale.push(dateStr);
+        return;
+      }
+      const updatedAt = data.updatedAt?.toDate?.();
+      if (!updatedAt) {
+        stale.push(dateStr);
+        return;
+      }
+      const ageMs = Date.now() - updatedAt.getTime();
+      if (ageMs > getStaleThresholdMs(dateStr)) {
+        stale.push(dateStr);
+      }
+    } catch {
+      stale.push(dateStr);
+    }
+  }));
+
+  return stale.sort();
+}
+
+/**
+ * Garante que os dias do período estão atualizados antes de exibir KPIs.
+ * "Hoje" sempre sincroniza (dados ao vivo). Demais dias só se stale.
+ */
+export async function garantirDadosAtualizados(startDate, endDate) {
+  const hojeStr = formatDateBRTYYYYMMDD();
+  const isApenasHoje = startDate === endDate && startDate === hojeStr;
+
+  if (isApenasHoje) {
+    const result = await dispararBackfillHoje({ force: true });
+    return {
+      refreshed: result.ok,
+      stale: [hojeStr],
+      throttled: false,
+      error: result.error || null,
+      mode: result.mode || "hoje",
+    };
+  }
+
+  const stale = await getDatasDesatualizadas(startDate, endDate);
+  if (stale.length === 0) {
+    return { refreshed: false, stale: [], skipped: true, error: null };
+  }
+
+  const refreshStart = stale[0];
+  const refreshEnd = stale[stale.length - 1];
+  let result = await dispararBackfillPeriodo(refreshStart, refreshEnd);
+
+  if (!result.ok && result.error?.startsWith("http_")) {
+    result = await dispararBackfillPeriodo(refreshStart, refreshEnd, { force: true });
+  }
+
+  return {
+    refreshed: result.ok && !result.skipped,
+    stale,
+    throttled: result.skipped === true,
+    error: result.error || null,
+  };
 }
 
 export async function getDashboardData(settings = {}) {
@@ -594,7 +764,7 @@ export async function getDailyEvolution(days = 30) {
 }
 
 export async function getUltimaAtualizacaoHoje() {
-  const hojeStr = formatDateLocalYYYYMMDD(new Date());
+  const hojeStr = formatDateBRTYYYYMMDD();
   try {
     const ref = doc(db, "shopee_daily", hojeStr);
     const snap = await getDoc(ref);
@@ -992,9 +1162,15 @@ export async function getPerdasByPeriod(startDate, endDate) {
   let countPerdas = 0;
   let totalFatPerdido = 0;
   let totalComissaoPerdida = 0;
+  const pedidosVistos = new Set();
 
   snapshot.forEach((docSnap) => {
     const d = docSnap.data() || {};
+    const pedidoKey = d.orderId
+      ? `${d.data || ""}_${d.orderId}`
+      : docSnap.id;
+    if (pedidosVistos.has(pedidoKey)) return;
+    pedidosVistos.add(pedidoKey);
     countPerdas += 1;
     totalFatPerdido += Number(d.faturamento_perdido || 0);
     totalComissaoPerdida += Number(d.comissao_perdida || 0);
