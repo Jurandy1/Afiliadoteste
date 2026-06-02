@@ -647,7 +647,7 @@ function agruparPorData(nodes) {
           const price = parseFloat(it.itemPrice || "0") || 0;
           const actual = parseFloat(it.actualAmount || "0") || 0;
           const refund = parseFloat(it.refundAmount || "0") || 0;
-          const gmv = actual > 0 ? actual : price * qty;
+          const gmv = (actual > 0 ? actual : price * qty) - refund;
           const comissaoEstimada = parseFloat(it.itemTotalCommission || it.itemCommission || "0") || 0;
           perdas.push({
             data: date,
