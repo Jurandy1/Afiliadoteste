@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useMemo, useState } from "react";
 import { collection, getDocs } from "firebase/firestore";
 import { BarChart3, DollarSign, ShoppingBag, Target, TrendingUp, Ticket } from "lucide-react";
-import { buscarProdutos, formatDateBRTYYYYMMDD, garantirDadosAtualizados, getComparacaoMensal, getDashboardData, getDashboardKPIs, getDashboardKPIsByPeriod, getPerdasByPeriod, getProdutosByPeriod, getProdutosPagina, getResumoSemana, getSubIdPanelData, getSubIdsByPeriod, getUltimaAtualizacaoHoje } from "../services/repositories/metricsRepository";
+import { buscarProdutos, formatDateBRTYYYYMMDD, garantirDadosAtualizados, getComparacaoMensal, getDashboardData, getDashboardKPIs, getDashboardKPIsByPeriod, getDashboardKPIsByPeriodWithRetry, getPerdasByPeriod, getProdutosByPeriod, getProdutosPagina, getResumoSemana, getSubIdPanelData, getSubIdsByPeriod, getUltimaAtualizacaoHoje } from "../services/repositories/metricsRepository";
 import { filterProdutos, sortProdutos } from "../domain/attribution/productFilters";
 import { paginate, DEFAULT_PAGE_SIZE } from "../utils/pagination";
 import { fmt, fmtPct, fmtRoas, fmtNum } from "../utils/formatters";
@@ -273,7 +273,9 @@ export default function DashboardPage() {
       }
 
       const [kpisFromSumario, produtosPage, subIdsFiltrados, produtosPeriodo, perdas] = await Promise.all([
-        getDashboardKPIsByPeriod(dataInicioBusca, dataFimBusca).catch(() => null),
+        periodoFiltro !== "all"
+          ? getDashboardKPIsByPeriodWithRetry(dataInicioBusca, dataFimBusca).catch(() => null)
+          : getDashboardKPIsByPeriod(dataInicioBusca, dataFimBusca).catch(() => null),
         getProdutosPagina(50).catch(() => ({ produtos: [], lastDoc: null, hasMore: false })),
         getSubIdsByPeriod(dataInicioBusca, dataFimBusca).catch(() => []),
         getProdutosByPeriod(dataInicioBusca, dataFimBusca).catch(() => []),

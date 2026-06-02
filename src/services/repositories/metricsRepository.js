@@ -227,6 +227,23 @@ export async function getDashboardKPIsByPeriod(startDate, endDate) {
   });
   historicoDiario.sort((a, b) => a.data.localeCompare(b.data));
 
+  let diasComDados = snap.size;
+  let kpiSource = "shopee_daily";
+
+  if (snap.size === 0 || (tot.pedidos === 0 && tot.vendas === 0 && tot.fat_bruto === 0)) {
+    const fallback = await agregarKPIsDeSubIdDaily(startDate, endDate);
+    if (fallback) {
+      Object.assign(tot, fallback.tot);
+      if (fallback.historicoDiario?.length) {
+        historicoDiario.length = 0;
+        historicoDiario.push(...fallback.historicoDiario);
+        historicoDiario.sort((a, b) => a.data.localeCompare(b.data));
+      }
+      diasComDados = fallback.diasComDados || historicoDiario.length;
+      kpiSource = "subid_daily_fallback";
+    }
+  }
+
   let gastoMeta = 0;
   let gastoPin = 0;
   let metaSource = "proporcional";
@@ -273,12 +290,17 @@ export async function getDashboardKPIsByPeriod(startDate, endDate) {
   const roi = gastoTotal > 0 ? (lucro / gastoTotal) * 100 : 0;
   const roas = gastoTotal > 0 ? tot.comissao_real / gastoTotal : 0;
 
+  if (kpiSource === "shopee_daily") {
+    kpiSource = metaSource === "daily" ? "shopee_daily+meta_daily" : "shopee_daily+meta_proporcional";
+  }
+
   console.log("🔵 [KPIsByPeriod] RESULTADO:", {
-    diasComDados: snap.size,
+    diasComDados,
     comissao: tot.comissao_total,
     vendas: tot.vendas,
     gastoMeta,
     gastoPin,
+    source: kpiSource,
   });
   return {
     comissao: tot.comissao_real,
@@ -298,8 +320,8 @@ export async function getDashboardKPIsByPeriod(startDate, endDate) {
     roas: Math.round(roas * 100) / 100,
     ticketMedio: tot.vendas > 0 ? tot.fat_bruto / tot.vendas : 0,
     lastUpdated: null,
-    diasComDados: snap.size,
-    _source: metaSource === "daily" ? "shopee_daily+meta_daily" : "shopee_daily+meta_proporcional",
+    diasComDados,
+    _source: kpiSource,
     historicoDiario,
   };
 }
@@ -447,6 +469,86 @@ export async function getDatasDesatualizadas(startDate, endDate) {
   }));
 
   return stale.sort();
+}
+
+async function agregarKPIsDeSubIdDaily(startDate, endDate) {
+  try {
+    const q = query(
+      collection(db, "subid_daily"),
+      where("data", ">=", startDate),
+      where("data", "<=", endDate),
+    );
+    const snapshot = await getDocs(q);
+    if (snapshot.empty) return null;
+
+    const tot = {
+      comissao_total: 0,
+      comissao_real: 0,
+      comissao_concluida: 0,
+      comissao_pendente: 0,
+      comissao_estimada: 0,
+      fat_bruto: 0,
+      vendas: 0,
+      pedidos: 0,
+      vendas_diretas: 0,
+      vendas_indiretas: 0,
+    };
+    const porDia = {};
+    const datasVistas = new Set();
+
+    snapshot.forEach((docSnap) => {
+      const d = docSnap.data() || {};
+      const data = d.data || startDate;
+      datasVistas.add(data);
+      tot.comissao_total += Number(d.comissoes || 0);
+      tot.comissao_real += Number(d.comissoes || 0);
+      tot.comissao_estimada += Number(d.comissoes_estimadas || 0);
+      tot.comissao_pendente += Number(d.comissoes || 0);
+      tot.fat_bruto += Number(d.faturamento || 0);
+      tot.vendas += Number(d.qtd_itens || 0);
+      tot.pedidos += Number(d.pedidos || 0);
+      tot.vendas_diretas += Number(d.vendas_diretas || 0);
+      tot.vendas_indiretas += Number(d.vendas_indiretas || 0);
+
+      if (!porDia[data]) {
+        porDia[data] = { comissaoEstimada: 0, comissao: 0, faturamento: 0, vendas: 0, pedidos: 0 };
+      }
+      porDia[data].comissaoEstimada += Number(d.comissoes_estimadas || 0);
+      porDia[data].comissao += Number(d.comissoes || 0);
+      porDia[data].faturamento += Number(d.faturamento || 0);
+      porDia[data].vendas += Number(d.qtd_itens || 0);
+      porDia[data].pedidos += Number(d.pedidos || 0);
+    });
+
+    if (tot.pedidos === 0 && tot.vendas === 0 && tot.fat_bruto === 0) return null;
+
+    console.log("🟡 [KPIsByPeriod] fallback subid_daily:", { datas: datasVistas.size, pedidos: tot.pedidos });
+    return {
+      tot,
+      historicoDiario: Object.entries(porDia).map(([data, v]) => ({ data, ...v })),
+      diasComDados: datasVistas.size,
+    };
+  } catch (err) {
+    console.warn("[KPIsByPeriod] fallback subid_daily falhou:", err);
+    return null;
+  }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Lê KPIs com retry após sync (Firestore pode demorar a refletir). */
+export async function getDashboardKPIsByPeriodWithRetry(startDate, endDate, { retries = 3, delayMs = 1500 } = {}) {
+  let result = await getDashboardKPIsByPeriod(startDate, endDate);
+  const isPeriodoFiltrado = startDate !== "2020-01-01" && endDate !== "2030-12-31";
+
+  for (let i = 0; i < retries && isPeriodoFiltrado && result.diasComDados === 0 && result.vendas === 0; i++) {
+    console.log(`🟡 [KPIsByPeriod] retry ${i + 1}/${retries} — aguardando Firestore...`);
+    await sleep(delayMs);
+    result = await getDashboardKPIsByPeriod(startDate, endDate);
+  }
+  return result;
 }
 
 /**

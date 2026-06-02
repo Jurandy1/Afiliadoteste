@@ -793,6 +793,29 @@ function agruparPorData(nodes) {
   return { dayMap, subIdDayMap, produtoDayMap, perdas };
 }
 
+function criarDailyVazio(date) {
+  return {
+    data: date,
+    pedidos: 0,
+    vendas: 0,
+    vendas_diretas: 0,
+    vendas_indiretas: 0,
+    faturamento: 0,
+    gmv_total: 0,
+    comissao_real: 0,
+    comissao_total: 0,
+    comissao_concluida: 0,
+    comissao_pendente: 0,
+    comissao_estimada: 0,
+  };
+}
+
+function garantirDatasNoDayMap(dayMap, dates) {
+  for (const date of dates) {
+    if (!dayMap[date]) dayMap[date] = criarDailyVazio(date);
+  }
+}
+
 function formatDateBRTYYYYMMDDNow() {
   return new Date((Date.now() / 1000 - 10800) * 1000).toISOString().split("T")[0];
 }
@@ -1246,8 +1269,10 @@ async function runShopeeSync({
   let produtoDailyGravados = 0;
   let perdasGravadas = 0;
   let perdasRemovidas = 0;
+  let dayMapKeys = [];
   if (updateDaily) {
     const { dayMap, subIdDayMap, produtoDayMap, perdas } = agruparPorData(allNodes);
+    dayMapKeys = Object.keys(dayMap);
 
     const datesToReplace = resolvedDateFilter?.type === "dates"
       ? resolvedDateFilter.dates
@@ -1256,6 +1281,7 @@ async function runShopeeSync({
         : new Set(Object.keys(dayMap));
 
     if (datesToReplace.size > 0) {
+      garantirDatasNoDayMap(dayMap, datesToReplace);
       perdasRemovidas = await limparLogPerdasPorDatas(datesToReplace, state, flush);
     }
 
@@ -1298,6 +1324,7 @@ async function runShopeeSync({
     perdas: perdasGravadas,
     perdasRemovidas,
     paginas: pageCount,
+    dayMapKeys: updateDaily ? dayMapKeys : [],
   };
 }
 
