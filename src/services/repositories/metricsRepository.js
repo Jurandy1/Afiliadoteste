@@ -174,10 +174,11 @@ export async function getDashboardKPIsByPeriod(startDate, endDate) {
   if (startDate === endDate) {
     const ref = doc(db, "shopee_daily", startDate);
     const snapDoc = await getDoc(ref);
+    const docValido = snapDoc.exists() && !isDailyMetricsVazio(snapDoc.data());
     snap = {
-      size: snapDoc.exists() ? 1 : 0,
+      size: docValido ? 1 : 0,
       forEach: (cb) => {
-        if (snapDoc.exists()) cb(snapDoc);
+        if (docValido) cb(snapDoc);
       },
     };
   } else {
@@ -203,8 +204,11 @@ export async function getDashboardKPIsByPeriod(startDate, endDate) {
   };
 
   const historicoDiario = [];
+  let diasComDadosReais = 0;
   snap.forEach((d) => {
     const x = d.data() || {};
+    if (isDailyMetricsVazio(x)) return;
+    diasComDadosReais += 1;
     tot.comissao_total += x.comissao_total || 0;
     tot.comissao_real += (x.comissao_real ?? x.comissao_total ?? 0);
     tot.comissao_concluida += x.comissao_concluida || 0;
@@ -227,10 +231,10 @@ export async function getDashboardKPIsByPeriod(startDate, endDate) {
   });
   historicoDiario.sort((a, b) => a.data.localeCompare(b.data));
 
-  let diasComDados = snap.size;
+  let diasComDados = diasComDadosReais;
   let kpiSource = "shopee_daily";
 
-  if (snap.size === 0 || (tot.pedidos === 0 && tot.vendas === 0 && tot.fat_bruto === 0)) {
+  if (diasComDadosReais === 0 || (tot.pedidos === 0 && tot.vendas === 0 && tot.fat_bruto === 0)) {
     const fallback = await agregarKPIsDeSubIdDaily(startDate, endDate);
     if (fallback) {
       Object.assign(tot, fallback.tot);
@@ -426,11 +430,35 @@ function getStaleThresholdMs(dateStr) {
   return 7 * 24 * 60 * 60 * 1000;
 }
 
-function isDocVazio(data) {
+function isDailyMetricsVazio(data) {
   const pedidos = Number(data?.pedidos || 0);
-  const vendas = Number(data?.vendas || 0);
+  const vendas = Number(data?.vendas ?? data?.qtd_itens ?? 0);
   const fat = Number(data?.faturamento ?? data?.gmv_total ?? 0);
   return pedidos === 0 && vendas === 0 && fat === 0;
+}
+
+async function temMetricasNoDia(dateStr) {
+  try {
+    const snap = await getDoc(doc(db, "shopee_daily", dateStr));
+    if (snap.exists() && !isDailyMetricsVazio(snap.data())) return true;
+    const subSnap = await getDocs(query(
+      collection(db, "subid_daily"),
+      where("data", "==", dateStr),
+      limit(5),
+    ));
+    return subSnap.docs.some((d) => !isDailyMetricsVazio(d.data()));
+  } catch {
+    return false;
+  }
+}
+
+async function aguardarMetricasPeriodo(startDate, endDate, { maxWaitMs = 28000, intervalMs = 2000 } = {}) {
+  if (startDate !== endDate) return;
+  const deadline = Date.now() + maxWaitMs;
+  while (Date.now() < deadline) {
+    if (await temMetricasNoDia(startDate)) return;
+    await sleep(intervalMs);
+  }
 }
 
 /**
@@ -450,7 +478,7 @@ export async function getDatasDesatualizadas(startDate, endDate) {
       }
       const data = snap.data() || {};
       const hojeStr = formatDateBRTYYYYMMDD();
-      if (dateStr === hojeStr && isDocVazio(data)) {
+      if (dateStr === hojeStr && isDailyMetricsVazio(data)) {
         stale.push(dateStr);
         return;
       }
@@ -539,7 +567,7 @@ function sleep(ms) {
 }
 
 /** Lê KPIs com retry após sync (Firestore pode demorar a refletir). */
-export async function getDashboardKPIsByPeriodWithRetry(startDate, endDate, { retries = 3, delayMs = 1500 } = {}) {
+export async function getDashboardKPIsByPeriodWithRetry(startDate, endDate, { retries = 10, delayMs = 2000 } = {}) {
   let result = await getDashboardKPIsByPeriod(startDate, endDate);
   const isPeriodoFiltrado = startDate !== "2020-01-01" && endDate !== "2030-12-31";
 
@@ -563,6 +591,9 @@ export async function garantirDadosAtualizados(startDate, endDate) {
 
   if (isApenasHoje) {
     const result = await dispararBackfillHoje({ force: true });
+    if (result.ok) {
+      await aguardarMetricasPeriodo(hojeStr, hojeStr);
+    }
     return {
       refreshed: result.ok,
       stale: [hojeStr],
