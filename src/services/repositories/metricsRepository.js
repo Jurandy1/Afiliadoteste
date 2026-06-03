@@ -1394,3 +1394,65 @@ export async function getPerdasByPeriod(startDate, endDate) {
     totalComissaoPerdida: Math.round(totalComissaoPerdida * 100) / 100,
   };
 }
+
+export async function getComissaoLiquidadaByPeriod(startDate, endDate) {
+  if (!startDate || !endDate) return null;
+  try {
+    const ref = collection(db, "shopee_validated_daily");
+    const q = query(ref, where(documentId(), ">=", startDate), where(documentId(), "<=", endDate));
+    const snap = await getDocs(q);
+
+    if (snap.empty) {
+      return {
+        comissaoLiquidada: 0,
+        comissaoTotalValidada: 0,
+        mcnFeeTotal: 0,
+        faturamentoLiquidado: 0,
+        refundTotal: 0,
+        itensLiquidados: 0,
+        conversoesValidadas: 0,
+        diasComDados: 0,
+        ultimaValidacao: null,
+        configurado: false,
+      };
+    }
+
+    const tot = {
+      comissaoLiquidada: 0,
+      comissaoTotalValidada: 0,
+      mcnFeeTotal: 0,
+      faturamentoLiquidado: 0,
+      refundTotal: 0,
+      itensLiquidados: 0,
+      conversoesValidadas: 0,
+    };
+    let ultimaValidacao = null;
+    snap.forEach((d) => {
+      const x = d.data() || {};
+      tot.comissaoLiquidada += Number(x.comissao_liquidada || 0);
+      tot.comissaoTotalValidada += Number(x.comissao_total_validada || 0);
+      tot.mcnFeeTotal += Number(x.mcn_fee_total || 0);
+      tot.faturamentoLiquidado += Number(x.faturamento_liquidado || 0);
+      tot.refundTotal += Number(x.refund_total || 0);
+      tot.itensLiquidados += Number(x.itens_liquidados || 0);
+      tot.conversoesValidadas += Number(x.conversoes_validadas || 0);
+      const upd = x.updatedAt?.toDate?.();
+      if (upd && (!ultimaValidacao || upd > ultimaValidacao)) ultimaValidacao = upd;
+    });
+
+    return {
+      ...tot,
+      comissaoLiquidada: Math.round(tot.comissaoLiquidada * 100) / 100,
+      comissaoTotalValidada: Math.round(tot.comissaoTotalValidada * 100) / 100,
+      mcnFeeTotal: Math.round(tot.mcnFeeTotal * 100) / 100,
+      faturamentoLiquidado: Math.round(tot.faturamentoLiquidado * 100) / 100,
+      refundTotal: Math.round(tot.refundTotal * 100) / 100,
+      diasComDados: snap.size,
+      ultimaValidacao,
+      configurado: true,
+    };
+  } catch (err) {
+    console.warn("[getComissaoLiquidadaByPeriod] erro:", err);
+    return null;
+  }
+}

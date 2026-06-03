@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useMemo, useState } from "react";
 import { collection, getDocs } from "firebase/firestore";
 import { BarChart3, DollarSign, ShoppingBag, Target, TrendingUp, Ticket } from "lucide-react";
-import { aguardarMetricasComListener, buscarProdutos, carregarKPIsDoPeriodo, formatDateBRTYYYYMMDD, garantirDadosAtualizados, getComparacaoMensal, getDashboardData, getDashboardKPIs, getDashboardKPIsByPeriod, getPerdasByPeriod, getProdutosByPeriod, getProdutosPagina, getResumoSemana, getSubIdPanelData, getSubIdsByPeriod, getUltimaAtualizacaoHoje } from "../services/repositories/metricsRepository";
+import { aguardarMetricasComListener, buscarProdutos, carregarKPIsDoPeriodo, formatDateBRTYYYYMMDD, garantirDadosAtualizados, getComparacaoMensal, getComissaoLiquidadaByPeriod, getDashboardData, getDashboardKPIs, getDashboardKPIsByPeriod, getPerdasByPeriod, getProdutosByPeriod, getProdutosPagina, getResumoSemana, getSubIdPanelData, getSubIdsByPeriod, getUltimaAtualizacaoHoje } from "../services/repositories/metricsRepository";
 import { filterProdutos, sortProdutos } from "../domain/attribution/productFilters";
 import { paginate, DEFAULT_PAGE_SIZE } from "../utils/pagination";
 import { fmt, fmtPct, fmtRoas, fmtNum } from "../utils/formatters";
@@ -172,7 +172,7 @@ function calcularRangePeriodo(periodo, rangeCustom) {
   return null;
 }
 
-function SyncStatusBar({ ultimaAtualizacao, atualizandoPeriodo, throttleRefreshMs, onRefreshNow }) {
+function SyncStatusBar({ ultimaAtualizacao, atualizandoPeriodo, throttleRefreshMs, onRefreshNow, periodoFiltro }) {
   const [agora, setAgora] = useState(Date.now());
   useEffect(() => {
     const id = setInterval(() => setAgora(Date.now()), 1000);
@@ -201,7 +201,7 @@ function SyncStatusBar({ ultimaAtualizacao, atualizandoPeriodo, throttleRefreshM
       ? "bg-emerald-50 border-emerald-200 text-emerald-800"
       : idadeMin !== null && idadeMin < 120
         ? "bg-amber-50 border-amber-200 text-amber-800"
-        : "bg-gray-50 border-gray-200 text-gray-700";
+        : "bg-red-50 border-red-200 text-red-800";
 
   return (
     <div className={`p-3 border rounded-lg flex flex-wrap items-center justify-between gap-3 ${corStatus}`}>
@@ -213,35 +213,63 @@ function SyncStatusBar({ ultimaAtualizacao, atualizandoPeriodo, throttleRefreshM
           </>
         ) : (
           <>
-            <span
-              className={`inline-block w-2 h-2 rounded-full ${
-                idadeMin !== null && idadeMin < 15
-                  ? "bg-emerald-500"
-                  : idadeMin !== null && idadeMin < 120
-                    ? "bg-amber-500"
-                    : "bg-gray-400"
-              }`}
-            />
-            <span>
-              <strong>Última atualização:</strong>{" "}
-              {ultimaAtualizacao ? `há ${idadeMin} min` : "—"}
-            </span>
+            {periodoFiltro === "hoje" && ultimaAtualizacao ? (
+              <div className="text-xs mt-1 flex items-center gap-2">
+                {(() => {
+                  const cor =
+                    idadeMin < 15 ? "text-emerald-600" : idadeMin < 120 ? "text-amber-600" : "text-red-600";
+                  const bolinha =
+                    idadeMin < 15 ? "bg-emerald-500" : idadeMin < 120 ? "bg-amber-500" : "bg-red-500";
+                  return (
+                    <>
+                      <span
+                        className={`inline-block w-2 h-2 rounded-full ${bolinha} ${
+                          idadeMin < 15 ? "animate-pulse" : ""
+                        }`}
+                      />
+                      <span className={cor}>
+                        📊 Dados de hoje atualizados {formatarTempoAtras(ultimaAtualizacao)}
+                        {idadeMin >= 120 && " — recomendado forçar sync"}
+                      </span>
+                    </>
+                  );
+                })()}
+              </div>
+            ) : (
+              <>
+                <span
+                  className={`inline-block w-2 h-2 rounded-full ${
+                    idadeMin !== null && idadeMin < 15
+                      ? "bg-emerald-500"
+                      : idadeMin !== null && idadeMin < 120
+                        ? "bg-amber-500"
+                        : "bg-red-500"
+                  }`}
+                />
+                <span>
+                  <strong>Última atualização:</strong>{" "}
+                  {ultimaAtualizacao ? formatarTempoAtras(ultimaAtualizacao) : "—"}
+                </span>
+              </>
+            )}
             <span className="text-xs opacity-75">
               · Próximo sync automático em <strong>{String(minProx).padStart(2, "0")}:{String(secProx).padStart(2, "0")}</strong>
             </span>
           </>
         )}
       </div>
-      <button
-        type="button"
-        onClick={onRefreshNow}
-        disabled={atualizandoPeriodo || throttleRefreshMs > 0}
-        className="text-xs px-3 py-1.5 bg-white border border-current rounded hover:bg-opacity-70 disabled:opacity-50 disabled:cursor-not-allowed"
-      >
-        {throttleRefreshMs > 0
-          ? `⏰ Aguarde ${Math.ceil(throttleRefreshMs / 1000)}s`
-          : "🔄 Atualizar agora"}
-      </button>
+      {periodoFiltro !== "hoje" && (
+        <button
+          type="button"
+          onClick={onRefreshNow}
+          disabled={atualizandoPeriodo || throttleRefreshMs > 0}
+          className="text-xs px-3 py-1.5 bg-white border border-current rounded hover:bg-opacity-70 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {throttleRefreshMs > 0
+            ? `⏰ Aguarde ${Math.ceil(throttleRefreshMs / 1000)}s`
+            : "🔄 Atualizar agora"}
+        </button>
+      )}
     </div>
   );
 }
@@ -279,6 +307,7 @@ export default function DashboardPage() {
   const [syncInfo, setSyncInfo] = useState(null);
   const [throttleRefreshMs, setThrottleRefreshMs] = useState(0);
   const [ultimaAtualizacao, setUltimaAtualizacao] = useState(null);
+  const [comissaoLiquidada, setComissaoLiquidada] = useState(null);
   const [comparacaoMensal, setComparacaoMensal] = useState(null);
   const [resumoSemana, setResumoSemana] = useState(null);
   const [subIdsPanel, setSubIdsPanel] = useState(null);
@@ -344,15 +373,17 @@ export default function DashboardPage() {
         ? garantirDadosAtualizados(range.startDate, range.endDate)
         : Promise.resolve(null);
 
-      let [kpisFromSumario, produtosPage, subIdsFiltrados, produtosPeriodo, perdas] = await Promise.all([
+      let [kpisFromSumario, produtosPage, subIdsFiltrados, produtosPeriodo, perdas, liquidada] = await Promise.all([
         getDashboardKPIsByPeriod(dataInicioBusca, dataFimBusca).catch(() => null),
         getProdutosPagina(50).catch(() => ({ produtos: [], lastDoc: null, hasMore: false })),
         getSubIdsByPeriod(dataInicioBusca, dataFimBusca).catch(() => []),
         getProdutosByPeriod(dataInicioBusca, dataFimBusca).catch(() => []),
         getPerdasByPeriod(dataInicioBusca, dataFimBusca).catch(() => ({ countPerdas: 0, totalFatPerdido: 0, totalComissaoPerdida: 0 })),
+        getComissaoLiquidadaByPeriod(dataInicioBusca, dataFimBusca).catch(() => null),
       ]);
 
       if (abortRef.current) return;
+      setComissaoLiquidada(liquidada);
 
       const sync = await syncPromise;
       if (precisaSync) {
@@ -804,9 +835,6 @@ export default function DashboardPage() {
             <button
               key={opt.id}
               onClick={() => {
-                if (opt.id === "hoje" && throttleRefreshMs > 0) {
-                  return;
-                }
                 if (opt.id !== "all" && opt.id !== "hoje") {
                   registrarRefreshPeriodo();
                   setThrottleRefreshMs(THROTTLE_REFRESH_DURACAO_MS);
@@ -818,18 +846,32 @@ export default function DashboardPage() {
               }}
               disabled={atualizandoPeriodo}
               className={
-                opt.id === "hoje" && throttleRefreshMs > 0
-                  ? "px-3 py-1 rounded text-sm bg-gray-300 text-gray-500 cursor-not-allowed"
-                  : periodoFiltro === opt.id
+                periodoFiltro === opt.id
                   ? "px-3 py-1 rounded text-sm bg-blue-600 text-white"
                   : "px-3 py-1 rounded text-sm bg-gray-100 text-gray-700 hover:bg-gray-200"
               }
             >
-              {opt.id === "hoje" && throttleRefreshMs > 0
-                ? `⏰ ${Math.ceil(throttleRefreshMs / 1000)}s`
-                : opt.label}
+              {opt.label}
             </button>
           ))}
+          {periodoFiltro === "hoje" && (
+            <button
+              type="button"
+              onClick={async () => {
+                registrarRefreshPeriodo();
+                setThrottleRefreshMs(THROTTLE_REFRESH_DURACAO_MS);
+                await load();
+              }}
+              disabled={atualizandoPeriodo || throttleRefreshMs > 0}
+              className="ml-2 px-3 py-1 rounded text-sm bg-emerald-600 text-white hover:bg-emerald-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
+            >
+              {atualizandoPeriodo
+                ? "🔄 Sincronizando..."
+                : throttleRefreshMs > 0
+                  ? `⏰ ${Math.ceil(throttleRefreshMs / 1000)}s`
+                  : "🔄 Atualizar agora"}
+            </button>
+          )}
           <div className="ml-auto">
             <AlertasBell />
           </div>
@@ -886,6 +928,7 @@ export default function DashboardPage() {
           ultimaAtualizacao={ultimaAtualizacao}
           atualizandoPeriodo={atualizandoPeriodo}
           throttleRefreshMs={throttleRefreshMs}
+          periodoFiltro={periodoFiltro}
           onRefreshNow={() => {
             registrarRefreshPeriodo();
             setThrottleRefreshMs(THROTTLE_REFRESH_DURACAO_MS);
@@ -902,6 +945,11 @@ export default function DashboardPage() {
         {syncInfo && !atualizandoPeriodo && !syncErro && (
           <div className="p-3 bg-amber-50 border border-amber-200 rounded text-sm text-amber-900">
             ℹ️ {syncInfo}
+            {periodoFiltro === "hoje" && (
+              <div className="mt-1 text-xs text-amber-700">
+                💡 Dados aparecem automaticamente quando o sync gravar no Firestore (até ~2 min).
+              </div>
+            )}
           </div>
         )}
 
@@ -910,6 +958,17 @@ export default function DashboardPage() {
             ℹ️ Os valores são sincronizados automaticamente com a API Shopee ao filtrar um período. Dados com mais de 7 dias são considerados estáveis e só atualizam se necessário.
           </div>
         )}
+
+        {periodoFiltro === "hoje" &&
+          data?.kpis &&
+          (data.kpis.totalComissao || 0) === 0 &&
+          (data.kpis.totalVendas || 0) === 0 &&
+          !atualizandoPeriodo && (
+            <div className="p-3 bg-amber-50 border border-amber-200 rounded text-sm text-amber-900 mb-3">
+              ⏳ <strong>Aguardando dados de hoje.</strong> O sync com a Shopee roda automaticamente a cada hora.
+              Você pode forçar agora com o botão "Atualizar agora" acima.
+            </div>
+          )}
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-8 gap-3 mb-4">
@@ -921,6 +980,26 @@ export default function DashboardPage() {
           trend="Painel Shopee"
           up={(kpis.comissaoEstimada || 0) >= 0}
         />
+        <div className="bg-emerald-50 rounded-lg border-2 border-emerald-300 p-3.5">
+          <div className="flex items-center justify-between mb-1">
+            <div className="text-[10px] text-emerald-700 uppercase tracking-wide font-bold">
+              Comissão Liquidada
+            </div>
+            <span className="text-[9px] bg-emerald-600 text-white px-1.5 py-0.5 rounded font-semibold">
+              OFICIAL
+            </span>
+          </div>
+          <div className="text-2xl font-bold text-emerald-900 mt-1">
+            {comissaoLiquidada?.configurado
+              ? `R$ ${comissaoLiquidada.comissaoLiquidada.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+              : "—"}
+          </div>
+          <div className="text-[10px] mt-1 text-emerald-700">
+            {comissaoLiquidada?.configurado
+              ? `Validada pela Shopee · ${comissaoLiquidada.conversoesValidadas} conversões`
+              : "Configure SHOPEE_VALIDATION_ID"}
+          </div>
+        </div>
         <KPICard
           icon={<DollarSign size={18} />}
           iconBg="bg-blue-50 text-blue-600"
@@ -1049,6 +1128,13 @@ export default function DashboardPage() {
             Impostos ativos: Meta Ads {settings.impostoMeta.toFixed(1)}% · NF {settings.impostoNf.toFixed(1)}% · Total {fmt(kpis.impostoTotal)}
           </div>
         )}
+      </div>
+
+      <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4 text-xs text-blue-900">
+        <strong>📊 Sobre as comissões:</strong>{" "}
+        <strong>Comissão Estimada</strong> reflete o que está no painel Shopee em tempo real (totalCommission).{" "}
+        <strong>Comissão Liquidada</strong> é o valor oficial confirmado pela Shopee (netCommission do validatedReport) —
+        bate 100% com o financeiro. Diferenças de 5-15% entre as duas são normais (ciclo de validação 7-14 dias).
       </div>
 
       

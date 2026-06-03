@@ -138,6 +138,11 @@ service cloud.firestore {
       allow write: if false;  // só backend (Admin SDK) escreve
     }
 
+    match /shopee_validated_daily/{docId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
     match /garimpo_produtos/{docId} {
       allow read: if true;
       allow write: if false;

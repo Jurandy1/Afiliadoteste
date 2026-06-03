@@ -420,17 +420,20 @@ function buildShopeeQuery(startTs, endTs, scrollId) {
       purchaseTimeEnd: ${endTs}${scrollClause}
     ) {
       nodes {
-        purchaseTime clickTime conversionId checkoutId conversionStatus
-        totalCommission sellerCommission netCommission grossCommission cappedCommission
+        purchaseTime clickTime conversionId conversionStatus
+        totalCommission netCommission shopeeCommissionCapped sellerCommission
+        mcnManagementFee mcnManagementFeeRate linkedMcnName
         referrer utmContent device buyerType
         orders {
           orderId orderStatus shopType
           items {
             itemId itemName itemPrice actualAmount refundAmount qty
-            itemCommission itemTotalCommission itemSellerCommission itemShopeeCommissionRate
+            completeTime fraudStatus displayItemStatus
+            itemTotalCommission itemSellerCommission itemSellerCommissionRate
+            itemShopeeCommissionCapped itemShopeeCommissionRate
             shopId shopName
-            categoryLv1Name categoryLv2Name categoryLv3Name
-            attributionType channelType displayItemStatus imageUrl
+            globalCategoryLv1Name globalCategoryLv2Name globalCategoryLv3Name
+            attributionType channelType imageUrl
           }
         }
       }
@@ -443,6 +446,7 @@ function shopeeClassifyStatus(rawStatus) {
   const s = String(rawStatus || "").toUpperCase().trim();
   if (s === "COMPLETED" || s.includes("CONCLU") || s.includes("COMPLET")) return "concluida";
   if (shopeeIsStatusPerda(s)) return "cancelada";
+  if (s === "UNPAID") return "unpaid";
   return "pendente";
 }
 
@@ -685,11 +689,14 @@ function agruparPorData(nodes) {
     orders_sem_date: 0,
     orders_sem_orderId: 0,
     orders_perda: 0,
+    orders_unpaid: 0,
+    orders_fraud: 0,
     orders_normais: 0,
     items_total: 0,
     items_normais: 0,
     items_de_perdas: 0,
     items_sem_itemId: 0,
+    items_fraud: 0,
     qty_total_normais: 0,
     qty_total_perdas: 0,
     status_count: {},
@@ -710,18 +717,37 @@ function agruparPorData(nodes) {
     const baseSubIdNorm = shopeeNormalizeSubId(baseSubIdRaw);
     const subKey = baseSubIdNorm || "ORGANICO";
 
-    // ★ Conversion-level commissions
+    // ★ Conversion-level commissions — CAMPOS OFICIAIS DA SHOPEE API
     //
-    // VALIDADO via shopeeCanceladosTest (03/06/2026):
-    //   netCommission TOTAL = R$ 33.892 ≈ Painel Shopee R$ 34.200 (diff 0.9%)
+    // Documentação:
+    //   totalCommission = shopeeCommissionCapped + sellerCommission  (igual ao painel)
+    //   netCommission   = totalCommission - mcnManagementFee         (só se houver MCN)
+    //
+    // Para alinhar com o painel Shopee, usamos SEMPRE totalCommission.
+    // netCommission é guardado separadamente para auditoria de MCN.
+    const totalCommissionConv = parseFloat(node.totalCommission || "0") || 0;
     const netCommissionConv = parseFloat(node.netCommission || "0") || 0;
+    const mcnFeeConv = parseFloat(node.mcnManagementFee || "0") || 0;
+    const shopeeCappedConv = parseFloat(node.shopeeCommissionCapped || "0") || 0;
+    const sellerCommConv = parseFloat(node.sellerCommission || "0") || 0;
 
-    let comissaoEstimadaConv = netCommissionConv;
+    void netCommissionConv;
+    void mcnFeeConv;
+
+    // "Comissão Estimada" do painel = totalCommission
+    let comissaoEstimadaConv = totalCommissionConv;
+
+    // Fallback 1: se total veio zerado, soma shopee + seller
+    if (comissaoEstimadaConv === 0) {
+      comissaoEstimadaConv = shopeeCappedConv + sellerCommConv;
+    }
+
+    // Fallback 2: ainda zerada, soma item-level
     if (comissaoEstimadaConv === 0) {
       let itemFallback = 0;
       for (const ord of orders) {
         for (const it of (ord.items || [])) {
-          itemFallback += parseFloat(it.itemTotalCommission || it.itemCommission || "0") || 0;
+          itemFallback += parseFloat(it.itemTotalCommission || "0") || 0;
         }
       }
       comissaoEstimadaConv = itemFallback;
@@ -747,10 +773,34 @@ function agruparPorData(nodes) {
 
       const isPerda = shopeeIsStatusPerda(statusPedidoRaw);
 
+      // MUDANÇA v2.1: CANCELLED soma na comissao_estimada (igual ao painel Shopee)
+      // mas continua zerado em comissao_real/concluida/pendente.
       if (isPerda) {
         diag.orders_perda++;
         diag.items_de_perdas += items.length;
         diag.perdas_por_status[statusPedidoRaw] = (diag.perdas_por_status[statusPedidoRaw] || 0) + 1;
+
+        // Garante dayMap[date] existe pra somar a estimada
+        if (!dayMap[date]) {
+          dayMap[date] = {
+            data: date,
+            pedidos: 0, vendas: 0, vendas_diretas: 0, vendas_indiretas: 0,
+            faturamento: 0, gmv_total: 0,
+            comissao_real: 0, comissao_total: 0,
+            comissao_concluida: 0, comissao_pendente: 0, comissao_estimada: 0,
+          };
+        }
+        if (!dayMap[date]._conversoesAplicadas) dayMap[date]._conversoesAplicadas = new Set();
+
+        // Soma a Estimada do cancelado (igual ao painel) — uma vez por conversionId
+        const conversionKeyDia = `${conversionId || orderId || "?"}`;
+        if (conversionId && !dayMap[date]._conversoesAplicadas.has(conversionKeyDia)) {
+          dayMap[date]._conversoesAplicadas.add(conversionKeyDia);
+          dayMap[date].comissao_estimada += comissaoEstimadaConv;
+          // NÃO soma em comissao_real, comissao_total, comissao_concluida, comissao_pendente
+        }
+
+        // Grava no log_perdas (igual antes)
         for (const it of items) {
           const qty = parseInt(it.qty, 10) || 1;
           diag.qty_total_perdas += qty;
@@ -759,7 +809,7 @@ function agruparPorData(nodes) {
           const price = parseFloat(it.itemPrice || "0") || 0;
           const actual = parseFloat(it.actualAmount || "0") || 0;
           const gmv = actual > 0 ? actual : price * qty;
-          const comissaoEstimada = parseFloat(it.itemTotalCommission || it.itemCommission || "0") || 0;
+          const comissaoEstimadaItem = parseFloat(it.itemTotalCommission || it.itemCommission || "0") || 0;
           perdas.push({
             data: date,
             status: statusPedidoRaw,
@@ -767,7 +817,7 @@ function agruparPorData(nodes) {
             orderId,
             itemId,
             faturamento_perdido: gmv,
-            comissao_perdida: comissaoEstimada,
+            comissao_perdida: comissaoEstimadaItem,
             timestamp: Date.now(),
           });
         }
@@ -779,6 +829,24 @@ function agruparPorData(nodes) {
 
       const status = shopeeClassifyStatus(statusPedidoRaw);
       const isCancel = status === "cancelada";
+      const isUnpaid = status === "unpaid";
+
+      // UNPAID = pedido criado mas não pago. Painel NÃO conta.
+      if (isUnpaid) {
+        diag.orders_unpaid += 1;
+        continue;
+      }
+
+      // FRAUD = item fraudulento. Painel subtrai dos agregados.
+      // Verifica se TODOS os items estão marcados como fraude.
+      const allFraud = items.length > 0 && items.every((it) => {
+        const fs = String(it.fraudStatus || "").toUpperCase().trim();
+        return fs === "FRAUD";
+      });
+      if (allFraud) {
+        diag.orders_fraud += 1;
+        continue;
+      }
 
       if (!dayMap[date]) {
         dayMap[date] = {
@@ -835,8 +903,36 @@ function agruparPorData(nodes) {
         d.comissao_total += comissaoRealConv;
         d.comissao_estimada += comissaoEstimadaConv;
 
-        if (status === "concluida") d.comissao_concluida += comissaoRealConv;
-        else if (status === "pendente") d.comissao_pendente += comissaoRealConv;
+        // IMPORTANTE: para "concluida", usar completeTime do PRIMEIRO item válido.
+        // Se não houver completeTime, cai para a data do pedido.
+        let dataConcluida = date;
+        if (status === "concluida") {
+          for (const it of (ord.items || [])) {
+            const ct = it.completeTime;
+            const ctDate = ct ? formatUnixToBRTDate(ct) : null;
+            if (ctDate) { dataConcluida = ctDate; break; }
+          }
+          // Garante que dayMap tem entrada para dataConcluida
+          if (!dayMap[dataConcluida]) {
+            dayMap[dataConcluida] = {
+              data: dataConcluida,
+              pedidos: 0,
+              vendas: 0,
+              vendas_diretas: 0,
+              vendas_indiretas: 0,
+              faturamento: 0,
+              gmv_total: 0,
+              comissao_real: 0,
+              comissao_total: 0,
+              comissao_concluida: 0,
+              comissao_pendente: 0,
+              comissao_estimada: 0,
+            };
+          }
+          dayMap[dataConcluida].comissao_concluida += comissaoRealConv;
+        } else if (status === "pendente") {
+          d.comissao_pendente += comissaoRealConv;
+        }
 
         const s = subIdDayMap[subDocId];
         s.comissoes += comissaoRealConv;
@@ -847,6 +943,14 @@ function agruparPorData(nodes) {
       for (const it of items) {
         const itemId = String(it.itemId || "").trim();
         if (!itemId) diag.items_sem_itemId++;
+
+        // Pula items fraudulentos
+        const itemFraudStatus = String(it.fraudStatus || "").toUpperCase().trim();
+        if (itemFraudStatus === "FRAUD") {
+          diag.items_fraud += 1;
+          continue;
+        }
+
         const itemKey = `${orderKey}_${itemId}`;
         if (dayMap[date]._itemsVistos.has(itemKey)) continue;
         dayMap[date]._itemsVistos.add(itemKey);
@@ -1080,35 +1184,73 @@ async function gravarShopeeDaily(dayMap, state, flush, dateFilter = null, mode =
 
 async function gravarSubIdDaily(subIdDayMap, state, flush, dateFilter = null, mode = "replace") {
   let gravados = 0;
+  const MIN_COMISSAO_RELEVANCIA = 1.0;
 
+  // Agrupa por data
+  const porData = {};
   for (const [docId, totais] of Object.entries(subIdDayMap)) {
     if (!passesDateFilter(totais.data, dateFilter)) continue;
+    if (!porData[totais.data]) porData[totais.data] = [];
+    porData[totais.data].push({ docId, totais });
+  }
 
-    const ref = db.collection("subid_daily").doc(docId);
+  for (const [data, lista] of Object.entries(porData)) {
+    const relevantes = lista.filter((x) => (x.totais.comissoes || 0) >= MIN_COMISSAO_RELEVANCIA);
+    const cauda = lista.filter((x) => (x.totais.comissoes || 0) < MIN_COMISSAO_RELEVANCIA);
 
-    if (mode === "increment") {
-      state.batch.set(ref, {
-        data: totais.data,
-        subid: totais.subid,
-        pedidos: FieldValue.increment(Number(totais.pedidos || 0)),
-        qtd_itens: FieldValue.increment(Number(totais.qtd_itens || 0)),
-        faturamento: FieldValue.increment(Number(totais.faturamento || 0)),
-        comissoes: FieldValue.increment(Number(totais.comissoes || 0)),
-        comissoes_estimadas: FieldValue.increment(Number(totais.comissoes_estimadas || 0)),
-        vendas_diretas: FieldValue.increment(Number(totais.vendas_diretas || 0)),
-        vendas_indiretas: FieldValue.increment(Number(totais.vendas_indiretas || 0)),
-        updatedAt: FieldValue.serverTimestamp(),
-      }, { merge: true });
-    } else {
-      state.batch.set(ref, {
-        ...totais,
-        updatedAt: FieldValue.serverTimestamp(),
-      });
+    // Grava SubIDs relevantes individualmente
+    for (const { docId, totais } of relevantes) {
+      const ref = db.collection("subid_daily").doc(docId);
+      if (mode === "increment") {
+        state.batch.set(ref, {
+          data: totais.data,
+          subid: totais.subid,
+          pedidos: FieldValue.increment(Number(totais.pedidos || 0)),
+          qtd_itens: FieldValue.increment(Number(totais.qtd_itens || 0)),
+          faturamento: FieldValue.increment(Number(totais.faturamento || 0)),
+          comissoes: FieldValue.increment(Number(totais.comissoes || 0)),
+          comissoes_estimadas: FieldValue.increment(Number(totais.comissoes_estimadas || 0)),
+          vendas_diretas: FieldValue.increment(Number(totais.vendas_diretas || 0)),
+          vendas_indiretas: FieldValue.increment(Number(totais.vendas_indiretas || 0)),
+          updatedAt: FieldValue.serverTimestamp(),
+        }, { merge: true });
+      } else {
+        state.batch.set(ref, { ...totais, updatedAt: FieldValue.serverTimestamp() });
+      }
+      state.count++;
+      gravados++;
+      await flush();
     }
 
-    state.count++;
-    gravados++;
-    await flush();
+    // Agrega cauda
+    if (cauda.length > 0) {
+      const caudaAgg = {
+        data,
+        subid: "_outros_canais",
+        pedidos: 0,
+        qtd_itens: 0,
+        faturamento: 0,
+        comissoes: 0,
+        comissoes_estimadas: 0,
+        vendas_diretas: 0,
+        vendas_indiretas: 0,
+        subids_count: cauda.length,
+      };
+      for (const { totais } of cauda) {
+        caudaAgg.pedidos += Number(totais.pedidos || 0);
+        caudaAgg.qtd_itens += Number(totais.qtd_itens || 0);
+        caudaAgg.faturamento += Number(totais.faturamento || 0);
+        caudaAgg.comissoes += Number(totais.comissoes || 0);
+        caudaAgg.comissoes_estimadas += Number(totais.comissoes_estimadas || 0);
+        caudaAgg.vendas_diretas += Number(totais.vendas_diretas || 0);
+        caudaAgg.vendas_indiretas += Number(totais.vendas_indiretas || 0);
+      }
+      const caudaRef = db.collection("subid_daily").doc(`${data}__outros_canais`);
+      state.batch.set(caudaRef, { ...caudaAgg, updatedAt: FieldValue.serverTimestamp() });
+      state.count++;
+      gravados++;
+      await flush();
+    }
   }
 
   return gravados;
@@ -1116,31 +1258,68 @@ async function gravarSubIdDaily(subIdDayMap, state, flush, dateFilter = null, mo
 
 async function gravarProdutoDaily(produtoDayMap, state, flush, dateFilter = null, mode = "replace") {
   let gravados = 0;
+  const TOP_N = 100;
 
+  // Agrupa por data
+  const porData = {};
   for (const [docId, totais] of Object.entries(produtoDayMap)) {
     if (!passesDateFilter(totais.data, dateFilter)) continue;
+    if (!porData[totais.data]) porData[totais.data] = [];
+    porData[totais.data].push({ docId, totais });
+  }
 
-    const ref = db.collection("produto_daily").doc(docId);
-    if (mode === "increment") {
-      state.batch.set(ref, {
-        data: totais.data,
-        produto_id: totais.produto_id,
-        nome: totais.nome,
-        comissoes: FieldValue.increment(Number(totais.comissoes || 0)),
-        comissoes_pendentes: FieldValue.increment(Number(totais.comissoes_pendentes || 0)),
-        qtd_itens: FieldValue.increment(Number(totais.qtd_itens || 0)),
-        faturamento: FieldValue.increment(Number(totais.faturamento || 0)),
-        updatedAt: FieldValue.serverTimestamp(),
-      }, { merge: true });
-    } else {
-      state.batch.set(ref, {
-        ...totais,
-        updatedAt: FieldValue.serverTimestamp(),
-      });
+  for (const [data, lista] of Object.entries(porData)) {
+    // Ordena por comissão (desc) e separa top N
+    lista.sort((a, b) => (b.totais.comissoes || 0) - (a.totais.comissoes || 0));
+    const top = lista.slice(0, TOP_N);
+    const cauda = lista.slice(TOP_N);
+
+    // Grava top N individualmente
+    for (const { docId, totais } of top) {
+      const ref = db.collection("produto_daily").doc(docId);
+      if (mode === "increment") {
+        state.batch.set(ref, {
+          data: totais.data,
+          produto_id: totais.produto_id,
+          nome: totais.nome,
+          comissoes: FieldValue.increment(Number(totais.comissoes || 0)),
+          comissoes_pendentes: FieldValue.increment(Number(totais.comissoes_pendentes || 0)),
+          qtd_itens: FieldValue.increment(Number(totais.qtd_itens || 0)),
+          faturamento: FieldValue.increment(Number(totais.faturamento || 0)),
+          updatedAt: FieldValue.serverTimestamp(),
+        }, { merge: true });
+      } else {
+        state.batch.set(ref, { ...totais, updatedAt: FieldValue.serverTimestamp() });
+      }
+      state.count++;
+      gravados++;
+      await flush();
     }
-    state.count++;
-    gravados++;
-    await flush();
+
+    // Agrega cauda em um único doc por data
+    if (cauda.length > 0) {
+      const caudaAgg = {
+        data,
+        produto_id: "_cauda_longa",
+        nome: `Cauda longa (${cauda.length} produtos)`,
+        comissoes: 0,
+        comissoes_pendentes: 0,
+        qtd_itens: 0,
+        faturamento: 0,
+        produtos_count: cauda.length,
+      };
+      for (const { totais } of cauda) {
+        caudaAgg.comissoes += Number(totais.comissoes || 0);
+        caudaAgg.comissoes_pendentes += Number(totais.comissoes_pendentes || 0);
+        caudaAgg.qtd_itens += Number(totais.qtd_itens || 0);
+        caudaAgg.faturamento += Number(totais.faturamento || 0);
+      }
+      const caudaRef = db.collection("produto_daily").doc(`${data}_cauda_longa`);
+      state.batch.set(caudaRef, { ...caudaAgg, updatedAt: FieldValue.serverTimestamp() });
+      state.count++;
+      gravados++;
+      await flush();
+    }
   }
 
   return gravados;
@@ -1501,16 +1680,16 @@ exports.shopeeDailyReconcile = onSchedule(
     timeZone: "America/Sao_Paulo",
     secrets: ["SHOPEE_APP_ID", "SHOPEE_SECRET"],
     timeoutSeconds: 540,
-    memory: "1GiB",
+    memory: "2GiB",
   },
   async () => {
     const now = Math.floor(Date.now() / 1000);
-    const start = now - 7 * 86400;
+    const start = now - 15 * 86400;
     try {
       await runShopeeSync({
         startTs: start,
         endTs: now,
-        label: "reconcile_30d",
+        label: "reconcile_15d",
         updateCursor: false, // reconcile não mexe no cursor do incremental
         updateDaily: true,
         dailyOnly: true,
@@ -2948,4 +3127,280 @@ exports.shopeeGarimpoNow = onRequest(
       res.status(500).json({ success: false, error: String(e?.message || e) });
     }
   }
+);
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  SHOPEE VALIDATED REPORT — comissões LIQUIDADAS (valores oficiais)
+//
+//  Diferença vs conversionReport:
+//    conversionReport → valores ESTIMADOS (totalCommission), oscilam
+//    validatedReport  → valores VALIDADOS (após auditoria Shopee), definitivos
+//
+//  Requer SHOPEE_VALIDATION_ID configurado como secret. Sem ele, função
+//  retorna vazio sem quebrar.
+//
+//  Como obter validationId:
+//    1. Acessar https://affiliate.shopee.com.br
+//    2. Ir em "Billing Information" / "Informações de Faturamento"
+//    3. Cada período de validação tem um ID único listado
+//    4. firebase functions:secrets:set SHOPEE_VALIDATION_ID
+// ═══════════════════════════════════════════════════════════════════════════
+
+function buildValidatedQuery(validationId, scrollId) {
+  const scrollClause = scrollId ? `, scrollId: ${JSON.stringify(scrollId)}` : "";
+  const validationClause = validationId ? `validationId: ${validationId}, ` : "";
+  return `{
+    validatedReport(
+      ${validationClause}
+      limit: ${SHOPEE_PAGE_LIMIT}${scrollClause}
+    ) {
+      nodes {
+        conversionId
+        purchaseTime
+        clickTime
+        totalCommission
+        netCommission
+        shopeeCommissionCapped
+        sellerCommission
+        mcnManagementFee
+        utmContent
+        orders {
+          orderId
+          orderStatus
+          items {
+            itemId
+            itemName
+            completeTime
+            actualAmount
+            refundAmount
+            qty
+            itemTotalCommission
+            fraudStatus
+            shopId
+            shopName
+          }
+        }
+      }
+      pageInfo { hasNextPage scrollId }
+    }
+  }`;
+}
+
+async function shopeeValidatedPullAll(validationId) {
+  const allNodes = [];
+  const seenConversionIds = new Set();
+  let duplicates = 0;
+  let scrollId = null;
+  let hasNext = true;
+  let pageCount = 0;
+
+  while (hasNext && pageCount < SHOPEE_MAX_PAGES) {
+    pageCount++;
+    const query = buildValidatedQuery(validationId, scrollId);
+    let data;
+    try {
+      data = await shopeeFetch(query);
+    } catch (err) {
+      console.warn(`[shopee-validated] erro: ${err.message}`);
+      return { allNodes: [], pageCount };
+    }
+    const report = data?.validatedReport || {};
+    const nodes = report.nodes || [];
+
+    let pageNew = 0;
+    for (const node of nodes) {
+      const cid = String(node?.conversionId || "").trim();
+      if (!cid) { allNodes.push(node); pageNew++; continue; }
+      if (seenConversionIds.has(cid)) { duplicates++; continue; }
+      seenConversionIds.add(cid);
+      allNodes.push(node);
+      pageNew++;
+    }
+
+    const pi = report.pageInfo || {};
+    hasNext = pi.hasNextPage === true;
+    const novoScrollId = pi.scrollId || null;
+    console.log(`[shopee-validated] página ${pageCount}: +${nodes.length} (${pageNew} novas, ${nodes.length - pageNew} dup) | total: ${allNodes.length}`);
+
+    if (hasNext && novoScrollId === scrollId && novoScrollId !== null) break;
+    scrollId = novoScrollId;
+    if (hasNext && !scrollId) break;
+    if (hasNext) await shopeeSleep(SHOPEE_PAGE_DELAY_MS);
+  }
+
+  if (duplicates > 0) console.warn(`[shopee-validated] ⚠️ ${duplicates} duplicatas removidas`);
+  return { allNodes, pageCount };
+}
+
+function agruparValidatedPorData(nodes) {
+  const dayMap = {};
+
+  for (const node of nodes) {
+    const conversionId = String(node.conversionId || "").trim();
+    const totalCommissionConv = parseFloat(node.totalCommission || "0") || 0;
+    const netCommissionConv = parseFloat(node.netCommission || "0") || 0;
+    const mcnFeeConv = parseFloat(node.mcnManagementFee || "0") || 0;
+    const orders = node.orders || [];
+    if (!orders.length) continue;
+
+    // Para validatedReport, usa completeTime do primeiro item válido
+    let dataValidacao = null;
+    for (const ord of orders) {
+      for (const it of (ord.items || [])) {
+        if (String(it.fraudStatus || "").toUpperCase() === "FRAUD") continue;
+        const ct = it.completeTime;
+        const ctDate = ct ? formatUnixToBRTDate(ct) : null;
+        if (ctDate) { dataValidacao = ctDate; break; }
+      }
+      if (dataValidacao) break;
+    }
+    if (!dataValidacao) {
+      const pt = node.purchaseTime;
+      dataValidacao = pt ? formatUnixToBRTDate(pt) : null;
+    }
+    if (!dataValidacao) continue;
+
+    let refundTotal = 0;
+    let actualTotal = 0;
+    let qtyTotal = 0;
+    for (const ord of orders) {
+      for (const it of (ord.items || [])) {
+        if (String(it.fraudStatus || "").toUpperCase() === "FRAUD") continue;
+        const qty = parseInt(it.qty, 10) || 1;
+        refundTotal += parseFloat(it.refundAmount || "0") || 0;
+        actualTotal += parseFloat(it.actualAmount || "0") || 0;
+        qtyTotal += qty;
+      }
+    }
+
+    if (!dayMap[dataValidacao]) {
+      dayMap[dataValidacao] = {
+        data: dataValidacao,
+        conversoes_validadas: 0,
+        comissao_total_validada: 0,
+        comissao_liquidada: 0,
+        mcn_fee_total: 0,
+        faturamento_liquidado: 0,
+        refund_total: 0,
+        itens_liquidados: 0,
+        _conversoesVistas: new Set(),
+      };
+    }
+
+    if (conversionId && dayMap[dataValidacao]._conversoesVistas.has(conversionId)) continue;
+    if (conversionId) dayMap[dataValidacao]._conversoesVistas.add(conversionId);
+
+    const d = dayMap[dataValidacao];
+    d.conversoes_validadas += 1;
+    d.comissao_total_validada += totalCommissionConv;
+    d.comissao_liquidada += netCommissionConv;
+    d.mcn_fee_total += mcnFeeConv;
+    d.faturamento_liquidado += (actualTotal - refundTotal);
+    d.refund_total += refundTotal;
+    d.itens_liquidados += qtyTotal;
+  }
+
+  for (const date in dayMap) delete dayMap[date]._conversoesVistas;
+  return dayMap;
+}
+
+async function runShopeeValidatedSync({ label = "validated_sync" }) {
+  const startedAt = Date.now();
+  const validationId = (process.env.SHOPEE_VALIDATION_ID || "").trim();
+
+  if (!validationId) {
+    console.warn("[shopee-validated] SHOPEE_VALIDATION_ID não configurado — pulando");
+    return { skipped: true, reason: "no_validation_id" };
+  }
+
+  const importRef = db.collection("importacoes").doc();
+  const importacaoId = importRef.id;
+  console.log(`[shopee-validated] início ${label} | validationId=${validationId} | importacaoId=${importacaoId}`);
+
+  const { allNodes, pageCount } = await shopeeValidatedPullAll(validationId);
+  const dayMap = agruparValidatedPorData(allNodes);
+
+  let batch = db.batch();
+  let count = 0;
+  const flush = async (force = false) => {
+    if (count >= 50 || (force && count > 0)) {
+      await batch.commit();
+      batch = db.batch();
+      count = 0;
+    }
+  };
+
+  let gravados = 0;
+  for (const [date, totais] of Object.entries(dayMap)) {
+    const ref = db.collection("shopee_validated_daily").doc(date);
+    batch.set(ref, {
+      ...totais,
+      validationId,
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
+    count++; gravados++;
+    await flush();
+  }
+
+  batch.set(importRef, {
+    tipo: "shopee_validated",
+    fonte: "api_backend",
+    validationId,
+    status: "sucesso",
+    linhasProcessadas: allNodes.length,
+    diasGravados: gravados,
+    duracaoMs: Date.now() - startedAt,
+    paginas: pageCount,
+    importadoEm: FieldValue.serverTimestamp(),
+  });
+  count++;
+  await flush(true);
+
+  console.log(`[shopee-validated] fim ${label} | nodes=${allNodes.length} | dias=${gravados} | ${Date.now() - startedAt}ms`);
+  return { importacaoId, nodes: allNodes.length, diasGravados: gravados, paginas: pageCount };
+}
+
+exports.shopeeValidatedDailySync = onSchedule(
+  {
+    schedule: "0 5 * * *",
+    timeZone: "America/Sao_Paulo",
+    secrets: ["SHOPEE_APP_ID", "SHOPEE_SECRET", "SHOPEE_VALIDATION_ID"],
+    timeoutSeconds: 540,
+    memory: "2GiB",
+  },
+  async () => {
+    try {
+      await runShopeeValidatedSync({ label: "validated_daily" });
+    } catch (e) {
+      console.error("[shopee-validated] daily falhou:", e?.message || e);
+    }
+  },
+);
+
+exports.shopeeValidatedBackfillNow = onRequest(
+  {
+    secrets: ["META_SYNC_SECRET", "SHOPEE_APP_ID", "SHOPEE_SECRET", "SHOPEE_VALIDATION_ID"],
+    timeoutSeconds: 540,
+    memory: "2GiB",
+  },
+  async (req, res) => {
+    res.set("Access-Control-Allow-Origin", "*");
+    res.set("Access-Control-Allow-Methods", "POST, OPTIONS");
+    res.set("Access-Control-Allow-Headers", "Authorization, Content-Type");
+    if (req.method === "OPTIONS") { res.status(204).send(""); return; }
+
+    const secret = (process.env.META_SYNC_SECRET || "").trim();
+    const provided = String(req.get("authorization") || "").trim();
+    if (!secret || provided !== `Bearer ${secret}`) {
+      res.status(401).json({ error: "unauthorized" });
+      return;
+    }
+
+    try {
+      const result = await runShopeeValidatedSync({ label: "validated_manual" });
+      res.json({ success: true, ...result });
+    } catch (e) {
+      res.status(500).json({ success: false, error: String(e?.message || e) });
+    }
+  },
 );
