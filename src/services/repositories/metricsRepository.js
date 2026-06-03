@@ -5,6 +5,7 @@ import {
   getDoc,
   getDocs,
   limit,
+  onSnapshot,
   orderBy,
   query,
   startAfter,
@@ -44,7 +45,7 @@ async function dispararBackfillLegacyToday() {
     const ctrl = new AbortController();
     const timeoutId = setTimeout(() => ctrl.abort(), 120000);
 
-    const resp = await fetch(`${url}?days=0&todayOnly=1`, {
+    const resp = await fetch(`${url}?days=0&todayOnly=1&force=1`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,
@@ -61,7 +62,7 @@ async function dispararBackfillLegacyToday() {
     }
 
     const json = await resp.json();
-    return { ok: true, mode: "todayOnly", result: json };
+    return { ok: true, mode: "todayOnly", result: json, skipped: json.skipped === true };
   } catch (err) {
     if (err.name === "AbortError") {
       return { ok: true, timeout: true, mode: "todayOnly" };
@@ -375,10 +376,10 @@ export async function dispararBackfillPeriodo(startDate, endDate, { force = fals
 
     const json = await resp.json();
     if (json.skipped) {
-      return { ok: true, skipped: true };
+      return { ok: true, skipped: true, result: json };
     }
     console.log("[dispararBackfillPeriodo] OK:", json);
-    return { ok: true };
+    return { ok: true, result: json };
   } catch (err) {
     if (err.name === "AbortError") {
       console.warn("[dispararBackfillPeriodo] Timeout — função pode estar rodando em background");
@@ -397,10 +398,14 @@ export async function dispararBackfillPeriodo(startDate, endDate, { force = fals
 export async function dispararBackfillHoje({ force = true } = {}) {
   const hojeStr = formatDateBRTYYYYMMDD();
 
+  // Preferir janela explícita com force (grava shopee_daily do dia inteiro)
+  const porData = await dispararBackfillPeriodo(hojeStr, hojeStr, { force });
+  if (porData.ok) return { ...porData, mode: "date_range" };
+
   const legacy = await dispararBackfillLegacyToday();
   if (legacy.ok) return legacy;
 
-  return dispararBackfillPeriodo(hojeStr, hojeStr, { force });
+  return porData;
 }
 
 function listDatesBetween(startStr, endStr) {
@@ -452,13 +457,62 @@ async function temMetricasNoDia(dateStr) {
   }
 }
 
-async function aguardarMetricasPeriodo(startDate, endDate, { maxWaitMs = 28000, intervalMs = 2000 } = {}) {
-  if (startDate !== endDate) return;
-  const deadline = Date.now() + maxWaitMs;
-  while (Date.now() < deadline) {
-    if (await temMetricasNoDia(startDate)) return;
-    await sleep(intervalMs);
-  }
+/**
+ * Espera o Firestore receber métricas do dia (listener + timeout).
+ * Substitui polling cego: reage assim que shopee_daily ou subid_daily atualizar.
+ */
+export function aguardarMetricasComListener(dateStr, { maxWaitMs = 90000 } = {}) {
+  if (!dateStr) return Promise.resolve(false);
+
+  return new Promise((resolve) => {
+    let settled = false;
+    let unsubDaily = null;
+    let unsubSub = null;
+
+    const finish = (ok) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (unsubDaily) unsubDaily();
+      if (unsubSub) unsubSub();
+      resolve(ok);
+    };
+
+    const verificar = async () => {
+      try {
+        if (await temMetricasNoDia(dateStr)) finish(true);
+      } catch {
+        /* ignora erro pontual de leitura */
+      }
+    };
+
+    unsubDaily = onSnapshot(
+      doc(db, "shopee_daily", dateStr),
+      () => { verificar(); },
+      () => {},
+    );
+
+    unsubSub = onSnapshot(
+      query(collection(db, "subid_daily"), where("data", "==", dateStr), limit(15)),
+      () => { verificar(); },
+      () => {},
+    );
+
+    const timer = setTimeout(() => finish(false), maxWaitMs);
+    verificar();
+  });
+}
+
+function extrairStatsSync(json) {
+  if (!json || typeof json !== "object") return { nodes: 0, pedidos: 0, shopeeDaily: 0, skipped: false };
+  const nodes = Number(json.nodes ?? json.linhasProcessadas ?? 0);
+  const pedidos = Number(json.pedidos ?? json.lastPedidos ?? 0);
+  return {
+    nodes,
+    pedidos,
+    shopeeDaily: Number(json.shopeeDaily ?? 0),
+    skipped: json.skipped === true,
+  };
 }
 
 /**
@@ -566,19 +620,18 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** Lê KPIs com retry após sync (Firestore pode demorar a refletir). */
-export async function getDashboardKPIsByPeriodWithRetry(startDate, endDate, { retries = 10, delayMs = 2000 } = {}) {
-  let result = await getDashboardKPIsByPeriod(startDate, endDate);
-  const isPeriodoFiltrado = startDate !== "2020-01-01" && endDate !== "2030-12-31";
-
-  const aindaVazio = (r) => (r.vendas || 0) === 0 && (r.comissao || 0) === 0 && (r.fatBruto || 0) === 0;
-
-  for (let i = 0; i < retries && isPeriodoFiltrado && aindaVazio(result); i++) {
-    console.log(`🟡 [KPIsByPeriod] retry ${i + 1}/${retries} — aguardando Firestore...`);
-    await sleep(delayMs);
-    result = await getDashboardKPIsByPeriod(startDate, endDate);
+/**
+ * Carrega KPIs do período. Se afterSync, aguarda até maxWaitMs pelo Firestore (só dia único).
+ */
+export async function carregarKPIsDoPeriodo(startDate, endDate, { afterSync = false, maxWaitMs = 25000 } = {}) {
+  if (afterSync && startDate === endDate) {
+    await aguardarMetricasComListener(startDate, { maxWaitMs });
   }
-  return result;
+  return getDashboardKPIsByPeriod(startDate, endDate);
+}
+
+export async function getDashboardKPIsByPeriodWithRetry(startDate, endDate) {
+  return carregarKPIsDoPeriodo(startDate, endDate, { afterSync: true, maxWaitMs: 25000 });
 }
 
 /**
@@ -591,15 +644,21 @@ export async function garantirDadosAtualizados(startDate, endDate) {
 
   if (isApenasHoje) {
     const result = await dispararBackfillHoje({ force: true });
-    if (result.ok) {
-      await aguardarMetricasPeriodo(hojeStr, hojeStr);
-    }
+    const stats = extrairStatsSync(result.result || result);
+    const throttled = result.skipped === true || stats.skipped;
+    const nodes = stats.nodes;
+    const pedidos = stats.pedidos;
     return {
-      refreshed: result.ok,
+      refreshed: result.ok && !throttled,
       stale: [hojeStr],
-      throttled: false,
+      throttled,
       error: result.error || null,
       mode: result.mode || "hoje",
+      nodes,
+      pedidos,
+      shopeeDaily: stats.shopeeDaily,
+      semVendasNaApi: result.ok && !throttled && nodes === 0,
+      apiComDadosSemFirestore: result.ok && !throttled && nodes > 0 && (stats.shopeeDaily || 0) === 0,
     };
   }
 

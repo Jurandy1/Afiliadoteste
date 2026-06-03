@@ -656,11 +656,9 @@ function agruparPorData(nodes) {
     const subKey = baseSubIdNorm || "ORGANICO";
 
     for (const ord of orders) {
-      let purchaseTimeSegundos = ord.purchaseTime || node.purchaseTime;
-      purchaseTimeSegundos = Number(purchaseTimeSegundos);
-      if (!purchaseTimeSegundos || Number.isNaN(purchaseTimeSegundos)) continue;
-      const dataHMBrasilia = new Date((purchaseTimeSegundos - 10800) * 1000);
-      const date = dataHMBrasilia.toISOString().split("T")[0];
+      const purchaseTimeRaw = ord.purchaseTime || node.purchaseTime;
+      const date = formatUnixToBRTDate(purchaseTimeRaw);
+      if (!date) continue;
 
       const items = ord.items || [];
       const orderId = String(ord.orderId || "").trim();
@@ -818,6 +816,14 @@ function garantirDatasNoDayMap(dayMap, dates) {
 
 function formatDateBRTYYYYMMDDNow() {
   return new Date((Date.now() / 1000 - 10800) * 1000).toISOString().split("T")[0];
+}
+
+/** Converte unix (s ou ms) para YYYY-MM-DD em America/Sao_Paulo. */
+function formatUnixToBRTDate(unixValue) {
+  let sec = Number(unixValue);
+  if (!Number.isFinite(sec) || sec <= 0) return null;
+  if (sec > 1e12) sec = Math.floor(sec / 1000);
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(new Date(sec * 1000));
 }
 
 function brtDateToUnixStart(dateStr) {
@@ -1281,7 +1287,14 @@ async function runShopeeSync({
         : new Set(Object.keys(dayMap));
 
     if (datesToReplace.size > 0) {
-      garantirDatasNoDayMap(dayMap, datesToReplace);
+      // Só grava dias com vendas reais — evita shopee_daily zerado que trava o dashboard em "Hoje"
+      for (const date of datesToReplace) {
+        if (!dayMap[date]) continue;
+        const t = dayMap[date];
+        const temDados = (t.pedidos || 0) > 0 || (t.vendas || 0) > 0
+          || (t.faturamento || 0) > 0 || (t.comissao_real || 0) > 0 || (t.comissao_total || 0) > 0;
+        if (!temDados) delete dayMap[date];
+      }
       perdasRemovidas = await limparLogPerdasPorDatas(datesToReplace, state, flush);
     }
 

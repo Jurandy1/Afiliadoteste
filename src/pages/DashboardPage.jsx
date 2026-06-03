@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useMemo, useState } from "react";
 import { collection, getDocs } from "firebase/firestore";
 import { BarChart3, DollarSign, ShoppingBag, Target, TrendingUp, Ticket } from "lucide-react";
-import { buscarProdutos, formatDateBRTYYYYMMDD, garantirDadosAtualizados, getComparacaoMensal, getDashboardData, getDashboardKPIs, getDashboardKPIsByPeriod, getDashboardKPIsByPeriodWithRetry, getPerdasByPeriod, getProdutosByPeriod, getProdutosPagina, getResumoSemana, getSubIdPanelData, getSubIdsByPeriod, getUltimaAtualizacaoHoje } from "../services/repositories/metricsRepository";
+import { aguardarMetricasComListener, buscarProdutos, carregarKPIsDoPeriodo, formatDateBRTYYYYMMDD, garantirDadosAtualizados, getComparacaoMensal, getDashboardData, getDashboardKPIs, getDashboardKPIsByPeriod, getPerdasByPeriod, getProdutosByPeriod, getProdutosPagina, getResumoSemana, getSubIdPanelData, getSubIdsByPeriod, getUltimaAtualizacaoHoje } from "../services/repositories/metricsRepository";
 import { filterProdutos, sortProdutos } from "../domain/attribution/productFilters";
 import { paginate, DEFAULT_PAGE_SIZE } from "../utils/pagination";
 import { fmt, fmtPct, fmtRoas, fmtNum } from "../utils/formatters";
@@ -202,6 +202,7 @@ export default function DashboardPage() {
   const [rangeCustom, setRangeCustom] = useState({ start: "", end: "" });
   const [atualizandoPeriodo, setAtualizandoPeriodo] = useState(false);
   const [syncErro, setSyncErro] = useState(null);
+  const [syncInfo, setSyncInfo] = useState(null);
   const [throttleRefreshMs, setThrottleRefreshMs] = useState(0);
   const [ultimaAtualizacao, setUltimaAtualizacao] = useState(null);
   const [comparacaoMensal, setComparacaoMensal] = useState(null);
@@ -210,6 +211,7 @@ export default function DashboardPage() {
   const [subIdDiagnosticsPanel, setSubIdDiagnosticsPanel] = useState(null);
   const abortRef = useRef(false);
   const subIdLoadedRef = useRef(false);
+  const listenerHojeAtivoRef = useRef(false);
 
   useEffect(() => {
     try {
@@ -254,28 +256,22 @@ export default function DashboardPage() {
       const range = calcularRangePeriodo(periodoFiltro, rangeCustom);
       const dataInicioBusca = (range && range.startDate) ? range.startDate : "2020-01-01";
       const dataFimBusca = (range && range.endDate) ? range.endDate : "2030-12-31";
+      let syncMensagem = null;
+      let syncErroMsg = null;
+      const precisaSync = periodoFiltro !== "all" && range?.startDate && range?.endDate;
 
-      if (periodoFiltro !== "all" && range?.startDate && range?.endDate) {
+      if (precisaSync) {
         setAtualizandoPeriodo(true);
         setSyncErro(null);
-        const sync = await garantirDadosAtualizados(range.startDate, range.endDate);
-        if (sync.error === "config_missing") {
-          setSyncErro("Sync não configurado: VITE_BACKFILL_URL ou VITE_BACKFILL_SECRET ausentes.");
-        } else if (sync.error) {
-          setSyncErro(`Falha ao sincronizar com a Shopee (${sync.error}). Exibindo cache local.`);
-        }
-        setAtualizandoPeriodo(false);
-        if (periodoFiltro === "hoje") {
-          getUltimaAtualizacaoHoje().then((ts) => {
-            if (!abortRef.current) setUltimaAtualizacao(ts);
-          });
-        }
+        setSyncInfo(null);
       }
 
-      const [kpisFromSumario, produtosPage, subIdsFiltrados, produtosPeriodo, perdas] = await Promise.all([
-        periodoFiltro !== "all"
-          ? getDashboardKPIsByPeriodWithRetry(dataInicioBusca, dataFimBusca).catch(() => null)
-          : getDashboardKPIsByPeriod(dataInicioBusca, dataFimBusca).catch(() => null),
+      const syncPromise = precisaSync
+        ? garantirDadosAtualizados(range.startDate, range.endDate)
+        : Promise.resolve(null);
+
+      let [kpisFromSumario, produtosPage, subIdsFiltrados, produtosPeriodo, perdas] = await Promise.all([
+        getDashboardKPIsByPeriod(dataInicioBusca, dataFimBusca).catch(() => null),
         getProdutosPagina(50).catch(() => ({ produtos: [], lastDoc: null, hasMore: false })),
         getSubIdsByPeriod(dataInicioBusca, dataFimBusca).catch(() => []),
         getProdutosByPeriod(dataInicioBusca, dataFimBusca).catch(() => []),
@@ -283,6 +279,38 @@ export default function DashboardPage() {
       ]);
 
       if (abortRef.current) return;
+
+      const sync = await syncPromise;
+      if (precisaSync) {
+        if (sync?.error === "config_missing") {
+          syncErroMsg = "Sync não configurado: VITE_BACKFILL_URL ou VITE_BACKFILL_SECRET ausentes.";
+        } else if (sync?.error) {
+          syncErroMsg = `Falha ao sincronizar com a Shopee (${sync.error}). Exibindo cache local.`;
+        } else if (sync?.semVendasNaApi) {
+          syncMensagem = `A API Shopee não retornou conversões para ${range.startDate}${range.endDate !== range.startDate ? `–${range.endDate}` : ""} nesta sincronização.`;
+        } else if (sync?.apiComDadosSemFirestore) {
+          syncMensagem = `API retornou ${sync.nodes} conversão(ões), aguardando gravação no Firestore…`;
+        } else if (sync?.throttled) {
+          syncMensagem = "Sincronização ignorada (muito recente). Exibindo cache do Firestore.";
+        }
+        if (syncErroMsg) setSyncErro(syncErroMsg);
+        if (syncMensagem) setSyncInfo(syncMensagem);
+        setAtualizandoPeriodo(false);
+
+        if (sync?.refreshed || sync?.apiComDadosSemFirestore) {
+          const kpisAtualizados = await carregarKPIsDoPeriodo(dataInicioBusca, dataFimBusca, {
+            afterSync: true,
+            maxWaitMs: periodoFiltro === "hoje" ? 35000 : 20000,
+          }).catch(() => null);
+          if (kpisAtualizados) kpisFromSumario = kpisAtualizados;
+        }
+
+        if (periodoFiltro === "hoje") {
+          getUltimaAtualizacaoHoje().then((ts) => {
+            if (!abortRef.current) setUltimaAtualizacao(ts);
+          });
+        }
+      }
 
       if (!kpisFromSumario) {
         const result = await getDashboardData(s);
@@ -343,6 +371,17 @@ export default function DashboardPage() {
       });
 
       setProdCursor({ lastDoc: produtosPage?.lastDoc || null, hasMore: !!produtosPage?.hasMore });
+
+      if (
+        periodoFiltro === "hoje"
+        && kpisFromSumario
+        && (kpisFromSumario.comissao || 0) === 0
+        && (kpisFromSumario.vendas || 0) === 0
+        && !syncMensagem
+        && !syncErroMsg
+      ) {
+        setSyncInfo("Aguardando dados de hoje no Firestore. O painel atualiza sozinho quando o sync gravar métricas.");
+      }
     } catch (e) {
       if (!abortRef.current) setLoadError(e);
     } finally {
@@ -352,6 +391,65 @@ export default function DashboardPage() {
       }
     }
   }, [periodoFiltro, rangeCustom]);
+
+  useEffect(() => {
+    if (periodoFiltro !== "hoje") {
+      listenerHojeAtivoRef.current = false;
+      return undefined;
+    }
+    if (!data?.kpis || listenerHojeAtivoRef.current) return undefined;
+
+    const zerado = (data.kpis.totalComissao || 0) === 0 && (data.kpis.totalVendas || 0) === 0;
+    if (!zerado) return undefined;
+
+    listenerHojeAtivoRef.current = true;
+    const hojeStr = formatDateBRTYYYYMMDD();
+    let ativo = true;
+
+    const recarregarSeChegouDado = async () => {
+      const kpis = await carregarKPIsDoPeriodo(hojeStr, hojeStr, { aguardarFirestore: false }).catch(() => null);
+      if (!ativo || !kpis) return;
+      const temValor = (kpis.comissao || 0) > 0 || (kpis.vendas || 0) > 0 || (kpis.fatBruto || 0) > 0;
+      if (!temValor) return;
+
+      setData((prev) => {
+        if (!prev?.kpis) return prev;
+        return {
+          ...prev,
+          kpis: {
+            ...prev.kpis,
+            totalComissao: kpis.comissao,
+            comissaoEstimada: kpis.comissaoEstimada || 0,
+            comissaoConcluida: kpis.comissaoConcluida,
+            comissaoPendente: kpis.comissaoPendente,
+            faturamentoBruto: kpis.fatBruto,
+            totalVendas: kpis.vendas,
+            totalPedidos: kpis.pedidos || 0,
+            vendasDiretas: kpis.vendasDiretas,
+            vendasIndiretas: kpis.vendasIndiretas,
+            totalInvestimento: kpis.gastoTotal,
+            lucro: kpis.lucro,
+            roas: kpis.roas,
+            roiGeral: kpis.gastoTotal > 0 ? kpis.lucro / kpis.gastoTotal : 0,
+            ticketMedio: kpis.ticketMedio,
+            metaTotalGasto: kpis.gastoMeta,
+            pinTotalGasto: kpis.gastoPin,
+          },
+          chartData: kpis.historicoDiario || prev.chartData,
+        };
+      });
+      setSyncInfo(null);
+      getUltimaAtualizacaoHoje().then((ts) => {
+        if (ativo) setUltimaAtualizacao(ts);
+      });
+    };
+
+    aguardarMetricasComListener(hojeStr, { maxWaitMs: 60000 }).then(() => {
+      if (ativo) recarregarSeChegouDado();
+    });
+
+    return () => { ativo = false; };
+  }, [periodoFiltro, data]);
 
   useEffect(() => {
     load();
@@ -635,12 +733,14 @@ export default function DashboardPage() {
                 if (opt.id === "hoje" && throttleRefreshMs > 0) {
                   return;
                 }
-                if (opt.id !== "all") {
+                if (opt.id !== "all" && opt.id !== "hoje") {
                   registrarRefreshPeriodo();
                   setThrottleRefreshMs(THROTTLE_REFRESH_DURACAO_MS);
                 }
                 setPeriodoFiltro(opt.id);
-                if (opt.id !== "custom") setRangeCustom({ start: "", end: "" });
+                if (opt.id !== "custom") {
+                  setRangeCustom({ start: "", end: "" });
+                }
               }}
               disabled={atualizandoPeriodo}
               className={
@@ -691,6 +791,8 @@ export default function DashboardPage() {
           <button
             onClick={() => {
               if (rangeCustom.start && rangeCustom.end) {
+                registrarRefreshPeriodo();
+                setThrottleRefreshMs(THROTTLE_REFRESH_DURACAO_MS);
                 setPeriodoFiltro("custom");
               }
             }}
@@ -714,7 +816,7 @@ export default function DashboardPage() {
 
         {atualizandoPeriodo && (
           <div className="p-3 bg-blue-50 border border-blue-200 rounded text-sm text-blue-800">
-            ⏳ Sincronizando dados da Shopee para o período selecionado... (pode levar até 2 minutos)
+            ⏳ Sincronizando com a Shopee e aguardando o Firestore (até ~90s em &quot;Hoje&quot;)...
           </div>
         )}
 
@@ -724,7 +826,13 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {periodoFiltro !== "all" && !atualizandoPeriodo && !syncErro && (
+        {syncInfo && !atualizandoPeriodo && !syncErro && (
+          <div className="p-3 bg-amber-50 border border-amber-200 rounded text-sm text-amber-900">
+            ℹ️ {syncInfo}
+          </div>
+        )}
+
+        {periodoFiltro !== "all" && !atualizandoPeriodo && !syncErro && !syncInfo && (
           <div className="p-3 bg-yellow-50 border border-yellow-200 rounded text-sm text-yellow-800">
             ℹ️ Os valores são sincronizados automaticamente com a API Shopee ao filtrar um período. Dados com mais de 7 dias são considerados estáveis e só atualizam se necessário.
           </div>
