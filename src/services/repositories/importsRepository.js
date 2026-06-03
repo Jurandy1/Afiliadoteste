@@ -322,9 +322,16 @@ export async function importShopeeVenda(arrayBufferOrBuffers, options = {}) {
     }
   }
 
+  const pedidosCsv = Object.values(prodMap || {}).reduce(
+    (s, p) => s + (p.pedidos_pendentes || 0) + (p.pedidos_concluidos || 0),
+    0,
+  );
+
   batch.set(importRef, {
     tipo: "shopee_venda",
+    fonte: "csv_manual",
     linhasProcessadas: processed,
+    pedidos: pedidosCsv,
     produtosUnicos: Object.keys(prodMap).length,
     subIdsUnicos: subIdKeys.length,
     subIdResumo,

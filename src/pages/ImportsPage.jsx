@@ -14,6 +14,13 @@ import ReconcileAdsButton from "../features/imports/ReconcileAdsButton";
 import ReconcileButton from "../features/imports/ReconcileButton";
 import { uploadImportFile } from "../services/firebase/storage";
 import { formatFirestoreDate } from "../utils/dates";
+import {
+  formatImportPeriodo,
+  formatLinhasImport,
+  formatPedidosSync,
+  formatRegistrosApi,
+  getImportOrigem,
+} from "../features/imports/importHistoryUtils";
 
 const ZONES = [
   { id: "shopee_venda", name: "Shopee — Vendas", desc: "Relatório de Comissões", format: ".csv", icon: <DollarSign size={32} className="text-orange-500" />, accept: ".csv" },
@@ -259,7 +266,12 @@ export default function ImportsPage({ onImportDone }) {
       {history.length > 0 && (
         <div className="bg-white rounded-lg border border-gray-200 p-4">
           <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
-            <h3 className="text-sm font-semibold">Histórico de importações</h3>
+            <div>
+              <h3 className="text-sm font-semibold">Histórico de importações</h3>
+              <p className="text-[10px] text-gray-500 mt-0.5">
+                <strong>API</strong> = sync automático Shopee · <strong>Registros API</strong> = conversões brutas da API · <strong>Pedidos</strong> = total contado no dashboard
+              </p>
+            </div>
             <button
               type="button"
               onClick={handleClearShopeeVendaHistory}
@@ -270,24 +282,50 @@ export default function ImportsPage({ onImportDone }) {
               Limpar Shopee Vendas
             </button>
           </div>
-          <table className="w-full text-xs">
+          <div className="overflow-x-auto">
+          <table className="w-full text-xs min-w-[720px]">
             <thead>
               <tr className="bg-gray-50 text-gray-400 uppercase text-[10px] tracking-wider">
                 <th className="text-left px-3 py-2">Data</th>
                 <th className="text-left px-3 py-2">Tipo</th>
-                <th className="px-3 py-2">Linhas</th>
+                <th className="text-left px-3 py-2">Origem</th>
+                <th className="text-left px-3 py-2">Período</th>
+                <th className="px-3 py-2 text-center" title="Conversões brutas retornadas pela API Shopee">Reg. API</th>
+                <th className="px-3 py-2 text-center" title="Pedidos pendentes + concluídos gravados no dashboard">Pedidos</th>
+                <th className="px-3 py-2 text-center">Linhas</th>
                 <th className="px-3 py-2">Status</th>
                 <th className="px-3 py-2">Ações</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">
-              {history.map((h) => (
-                <tr key={h.id}>
-                  <td className="px-3 py-2">{formatFirestoreDate(h.importadoEm)}</td>
+              {history.map((h) => {
+                const origem = getImportOrigem(h);
+                const isShopeeVenda = h.tipo === "shopee_venda";
+                return (
+                <tr key={h.id} className="hover:bg-gray-50/50">
+                  <td className="px-3 py-2 whitespace-nowrap">{formatFirestoreDate(h.importadoEm)}</td>
                   <td className="px-3 py-2">
                     <Badge text={TIPO_LABELS[h.tipo] || h.tipo} variant="Shopee" />
                   </td>
-                  <td className="px-3 py-2 text-center">{h.linhasProcessadas || 0}</td>
+                  <td className="px-3 py-2">
+                    {isShopeeVenda ? (
+                      <span title={origem.title}>
+                        <Badge text={origem.label} variant={origem.variant} />
+                      </span>
+                    ) : (
+                      <span className="text-gray-400">—</span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2 text-gray-600 max-w-[120px] truncate" title={formatImportPeriodo(h)}>
+                    {isShopeeVenda ? formatImportPeriodo(h) : "—"}
+                  </td>
+                  <td className="px-3 py-2 text-center font-mono text-[11px]">
+                    {isShopeeVenda ? formatRegistrosApi(h) : "—"}
+                  </td>
+                  <td className="px-3 py-2 text-center font-semibold text-indigo-700">
+                    {isShopeeVenda ? formatPedidosSync(h) : "—"}
+                  </td>
+                  <td className="px-3 py-2 text-center">{formatLinhasImport(h)}</td>
                   <td className="px-3 py-2 text-center">
                     <Badge text={h.status === "sucesso" ? "✓ OK" : "✗ Erro"} variant={h.status === "sucesso" ? "Escalando" : "Sem Estoque"} />
                   </td>
@@ -303,9 +341,11 @@ export default function ImportsPage({ onImportDone }) {
                     </button>
                   </td>
                 </tr>
-              ))}
+              );
+              })}
             </tbody>
           </table>
+          </div>
         </div>
       )}
     </>

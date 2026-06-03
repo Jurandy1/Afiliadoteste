@@ -21,13 +21,13 @@ export default function App() {
     getMetaAds().catch(() => {});
   }, []);
 
-  const current = ROUTES[route];
+  const current = ROUTES[route] || ROUTES.traffic_overview;
   const Page = current.Page;
   const subtitle =
     route === "audit" ? `${alertCount} pendentes` : current.sub;
 
   const navigate = (next) => {
-    setRoute(next);
+    setRoute(next === "traffic" ? "traffic_overview" : next);
     setMobileMenuOpen(false);
   };
 
@@ -65,6 +65,8 @@ export default function App() {
           <div className="p-5">
             {route === "imports" ? (
               <Page onImportDone={refreshAlerts} />
+            ) : current.section ? (
+              <Page section={current.section} activeRoute={route} onNavigate={navigate} />
             ) : (
               <Page />
             )}

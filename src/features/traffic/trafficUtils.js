@@ -15,14 +15,33 @@ export function fmtDate(ts) {
 export function computeMetaStats(meta) {
   const totalGasto = meta.reduce((s, m) => s + (m.valorUsado || 0), 0);
   const totalCliques = meta.reduce((s, m) => s + (m.resultados || 0), 0);
+  const totalCliquesExternos = meta.reduce((s, m) => s + (m.cliquesExternos || 0), 0);
   const totalImpressoes = meta.reduce((s, m) => s + (m.impressoes || 0), 0);
+  const totalAlcance = meta.reduce((s, m) => s + (m.alcance || 0), 0);
+  const comFreq = meta.filter((m) => m.frequencia);
+  const freqMedia = comFreq.length
+    ? comFreq.reduce((s, m) => s + (m.frequencia || 0), 0) / comFreq.length
+    : 0;
   const cpc = totalCliques > 0 ? totalGasto / totalCliques : 0;
   const ctr = totalImpressoes > 0 ? (totalCliques / totalImpressoes) * 100 : 0;
   const cpm = totalImpressoes > 0 ? (totalGasto / totalImpressoes) * 1000 : 0;
   const latestMs = meta.reduce((max, m) => Math.max(max, toMillis(m.importadoEm) || toMillis(m.updatedAt)), 0);
   const active = meta.filter((m) => String(m.status || "").toLowerCase().includes("ativo")).length;
   const paused = meta.length - active;
-  return { totalGasto, totalCliques, totalImpressoes, cpc, ctr, cpm, latestMs, active, paused };
+  return {
+    totalGasto,
+    totalCliques,
+    totalCliquesExternos,
+    totalImpressoes,
+    totalAlcance,
+    freqMedia,
+    cpc,
+    ctr,
+    cpm,
+    latestMs,
+    active,
+    paused,
+  };
 }
 
 export function computePinterestStats(pins) {

@@ -1614,6 +1614,7 @@ async function runShopeeSync({
       rangeEnd: endTs,
       status: "sucesso",
       linhasProcessadas: allNodes.length,
+      registros_api: allNodes.length,
       produtosUnicos: Object.keys(prodMap).length,
       subIdsUnicos: Object.keys(subIdMap).length,
       duracaoMs: Date.now() - startedAt,
@@ -1644,8 +1645,11 @@ async function runShopeeSync({
   let perdasRemovidas = 0;
   let dayMapKeys = [];
   let pedidosGravados = 0;
+  let dayMap = null;
   if (updateDaily) {
-    const { dayMap, subIdDayMap, produtoDayMap, perdas } = agruparPorData(allNodes);
+    const grouped = agruparPorData(allNodes);
+    dayMap = grouped.dayMap;
+    const { subIdDayMap, produtoDayMap, perdas } = grouped;
     dayMapKeys = Object.keys(dayMap);
 
     const datesToReplace = resolvedDateFilter?.type === "dates"
@@ -1693,7 +1697,30 @@ async function runShopeeSync({
         nodes: allNodes.length,
         pedidos: pedidosGravados,
       });
+    } else if (dayMap) {
+      pedidosGravados = Object.values(dayMap).reduce((s, d) => s + (d.pedidos || 0), 0);
     }
+  }
+
+  if (!(allNodes.length === 0 && label === "incremental_cursor") && dayMap) {
+    const pedidosPorDia = {};
+    const diasAtualizados = resolvedDateFilter?.type === "dates"
+      ? [...resolvedDateFilter.dates]
+      : resolvedDateFilter?.type === "today"
+        ? [formatDateBRTYYYYMMDDNow()]
+        : dayMapKeys.slice().sort();
+    for (const date of diasAtualizados) {
+      if (dayMap[date]) pedidosPorDia[date] = dayMap[date].pedidos || 0;
+    }
+    if (pedidosGravados === 0) {
+      pedidosGravados = Object.values(pedidosPorDia).reduce((s, n) => s + (Number(n) || 0), 0);
+    }
+    state.batch.set(importRef, {
+      pedidos: pedidosGravados,
+      pedidosPorDia,
+      diasAtualizados,
+    }, { merge: true });
+    state.count++;
   }
 
   await flush(true);
