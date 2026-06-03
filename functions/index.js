@@ -548,8 +548,7 @@ function shopeeAggregate(nodes) {
         const qty = parseInt(it.qty, 10) || 1;
         const price = parseFloat(it.itemPrice || "0") || 0;
         const actual = parseFloat(it.actualAmount || "0") || 0;
-        const refund = parseFloat(it.refundAmount || "0") || 0;
-        const gmv = (actual > 0 ? actual : price * qty) - refund;
+        const gmv = (actual > 0 ? actual : price * qty);
         const commission = parseFloat(it.itemCommission || it.itemTotalCommission || "0") || 0;
         const comissaoEstimada = parseFloat(it.itemTotalCommission || it.itemCommission || "0") || 0;
         const comissaoReal = isCancel ? 0 : commission;
@@ -670,7 +669,6 @@ function agruparPorData(nodes) {
           const qty = parseInt(it.qty, 10) || 1;
           const price = parseFloat(it.itemPrice || "0") || 0;
           const actual = parseFloat(it.actualAmount || "0") || 0;
-          const refund = parseFloat(it.refundAmount || "0") || 0;
           const gmv = actual > 0 ? actual : price * qty;
           const comissaoEstimada = parseFloat(it.itemTotalCommission || it.itemCommission || "0") || 0;
           perdas.push({
@@ -730,8 +728,7 @@ function agruparPorData(nodes) {
         const qty = parseInt(it.qty, 10) || 1;
         const price = parseFloat(it.itemPrice || "0") || 0;
         const actual = parseFloat(it.actualAmount || "0") || 0;
-        const refund = parseFloat(it.refundAmount || "0") || 0;
-        const gmv = (actual > 0 ? actual : price * qty) - refund;
+        const gmv = (actual > 0 ? actual : price * qty);
         const commission =
           parseFloat(it.itemCommission || it.itemTotalCommission || "0") || 0;
         const comissaoEstimada = parseFloat(it.itemTotalCommission || it.itemCommission || "0") || 0;
