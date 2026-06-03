@@ -488,6 +488,8 @@ function shopeeIsDireta(attr) {
 
 async function shopeePullRange(startTs, endTs) {
   const allNodes = [];
+  const seenConversionIds = new Set();
+  let duplicates = 0;
   let scrollId = null;
   let hasNext = true;
   let pageCount = 0;
@@ -498,13 +500,34 @@ async function shopeePullRange(startTs, endTs) {
     const data = await shopeeFetch(query);
     const report = data?.conversionReport || {};
     const nodes = report.nodes || [];
-    allNodes.push(...nodes);
+    let pageNew = 0;
+    for (const node of nodes) {
+      const cid = String(node?.conversionId || "").trim();
+      if (!cid) {
+        allNodes.push(node);
+        pageNew++;
+        continue;
+      }
+      if (seenConversionIds.has(cid)) {
+        duplicates++;
+        continue;
+      }
+      seenConversionIds.add(cid);
+      allNodes.push(node);
+      pageNew++;
+    }
 
     const pi = report.pageInfo || {};
     hasNext = pi.hasNextPage === true;
-    scrollId = pi.scrollId || null;
+    const novoScrollId = pi.scrollId || null;
 
-    console.log(`[shopee] página ${pageCount}: +${nodes.length} (acumulado: ${allNodes.length}) | hasNext=${hasNext}`);
+    console.log(`[shopee] página ${pageCount}: +${nodes.length} (${pageNew} novas, ${nodes.length - pageNew} dup) | total único: ${allNodes.length} | hasNext=${hasNext}`);
+
+    if (hasNext && novoScrollId === scrollId && novoScrollId !== null) {
+      console.warn("[shopee] scrollId repetido — paginação em loop, parando.");
+      break;
+    }
+    scrollId = novoScrollId;
 
     if (hasNext && !scrollId) {
       console.warn("[shopee] hasNextPage=true mas sem scrollId. Parando por segurança.");
@@ -512,7 +535,13 @@ async function shopeePullRange(startTs, endTs) {
     }
     if (hasNext) await shopeeSleep(SHOPEE_PAGE_DELAY_MS);
   }
-  return { allNodes, pageCount };
+
+  if (duplicates > 0) {
+    const pct = ((duplicates / (allNodes.length + duplicates)) * 100).toFixed(1);
+    console.warn(`[shopee] ⚠️ ${duplicates} conversões duplicadas removidas (${pct}% das vindas da API)`);
+  }
+
+  return { allNodes, pageCount, duplicates };
 }
 
 function shopeeAggregate(nodes) {
@@ -647,26 +676,86 @@ function agruparPorData(nodes) {
   const produtoDayMap = {};
   const perdas = [];
 
+  // ★★★ DIAGNÓSTICO TEMPORÁRIO — identificar onde dados são descartados ★★★
+  const diag = {
+    nodes_recebidos: nodes.length,
+    nodes_sem_orders: 0,
+    nodes_sem_conversionId: 0,
+    orders_total: 0,
+    orders_sem_date: 0,
+    orders_sem_orderId: 0,
+    orders_perda: 0,
+    orders_normais: 0,
+    items_total: 0,
+    items_normais: 0,
+    items_de_perdas: 0,
+    items_sem_itemId: 0,
+    qty_total_normais: 0,
+    qty_total_perdas: 0,
+    status_count: {},
+    perdas_por_status: {},
+  };
+
   for (const node of nodes) {
     const conversionId = String(node.conversionId || "").trim();
+    if (!conversionId) diag.nodes_sem_conversionId++;
+
     const orders = node.orders || [];
+    if (!orders.length) {
+      diag.nodes_sem_orders++;
+      continue;
+    }
+
     const baseSubIdRaw = node.utmContent || "";
     const baseSubIdNorm = shopeeNormalizeSubId(baseSubIdRaw);
     const subKey = baseSubIdNorm || "ORGANICO";
 
+    // ★ Conversion-level commissions
+    //
+    // VALIDADO via shopeeCanceladosTest (03/06/2026):
+    //   netCommission TOTAL = R$ 33.892 ≈ Painel Shopee R$ 34.200 (diff 0.9%)
+    const netCommissionConv = parseFloat(node.netCommission || "0") || 0;
+
+    let comissaoEstimadaConv = netCommissionConv;
+    if (comissaoEstimadaConv === 0) {
+      let itemFallback = 0;
+      for (const ord of orders) {
+        for (const it of (ord.items || [])) {
+          itemFallback += parseFloat(it.itemTotalCommission || it.itemCommission || "0") || 0;
+        }
+      }
+      comissaoEstimadaConv = itemFallback;
+    }
+
     for (const ord of orders) {
+      diag.orders_total++;
       const purchaseTimeRaw = ord.purchaseTime || node.purchaseTime;
       const date = formatUnixToBRTDate(purchaseTimeRaw);
-      if (!date) continue;
+      if (!date) {
+        diag.orders_sem_date++;
+        continue;
+      }
 
       const items = ord.items || [];
+      diag.items_total += items.length;
+
       const orderId = String(ord.orderId || "").trim();
+      if (!orderId) diag.orders_sem_orderId++;
+
       const statusPedidoRaw = ord.orderStatus || node.conversionStatus || "";
+      diag.status_count[statusPedidoRaw] = (diag.status_count[statusPedidoRaw] || 0) + 1;
+
       const isPerda = shopeeIsStatusPerda(statusPedidoRaw);
+
       if (isPerda) {
+        diag.orders_perda++;
+        diag.items_de_perdas += items.length;
+        diag.perdas_por_status[statusPedidoRaw] = (diag.perdas_por_status[statusPedidoRaw] || 0) + 1;
         for (const it of items) {
-          const itemId = String(it.itemId || "").trim();
           const qty = parseInt(it.qty, 10) || 1;
+          diag.qty_total_perdas += qty;
+          const itemId = String(it.itemId || "").trim();
+          if (!itemId) diag.items_sem_itemId++;
           const price = parseFloat(it.itemPrice || "0") || 0;
           const actual = parseFloat(it.actualAmount || "0") || 0;
           const gmv = actual > 0 ? actual : price * qty;
@@ -677,13 +766,16 @@ function agruparPorData(nodes) {
             conversionId,
             orderId,
             itemId,
-            faturamento_perdido: parseFloat(gmv) || 0,
-            comissao_perdida: parseFloat(comissaoEstimada) || 0,
+            faturamento_perdido: gmv,
+            comissao_perdida: comissaoEstimada,
             timestamp: Date.now(),
           });
         }
         continue;
       }
+
+      diag.orders_normais++;
+      diag.items_normais += items.length;
 
       const status = shopeeClassifyStatus(statusPedidoRaw);
       const isCancel = status === "cancelada";
@@ -705,6 +797,10 @@ function agruparPorData(nodes) {
         };
       }
 
+      if (!dayMap[date]._pedidosVistos) dayMap[date]._pedidosVistos = new Set();
+      if (!dayMap[date]._itemsVistos) dayMap[date]._itemsVistos = new Set();
+      if (!dayMap[date]._conversoesAplicadas) dayMap[date]._conversoesAplicadas = new Set();
+
       const subDocId = `${date}_${subKey}`;
       if (!subIdDayMap[subDocId]) {
         subIdDayMap[subDocId] = {
@@ -720,51 +816,65 @@ function agruparPorData(nodes) {
         };
       }
 
-      const pedidosInc = (items && items.length > 0) ? 1 : 0;
-      dayMap[date].pedidos += pedidosInc;
-      subIdDayMap[subDocId].pedidos += pedidosInc;
+      // PEDIDOS — conta cada orderId único por dia uma vez
+      const orderKey = orderId || `__no_id_${conversionId || "?"}`;
+      const isNovoOrderNoDia = !dayMap[date]._pedidosVistos.has(orderKey);
+      if (isNovoOrderNoDia && items.length > 0) {
+        dayMap[date]._pedidosVistos.add(orderKey);
+        dayMap[date].pedidos += 1;
+        subIdDayMap[subDocId].pedidos += 1;
+      }
 
+      // COMISSÃO — aplica VALOR DA CONVERSÃO uma vez por conversionId/dia
+      const conversionKeyDia = `${conversionId || orderKey}`;
+      if (conversionId && !dayMap[date]._conversoesAplicadas.has(conversionKeyDia)) {
+        dayMap[date]._conversoesAplicadas.add(conversionKeyDia);
+        const d = dayMap[date];
+        const comissaoRealConv = isCancel ? 0 : comissaoEstimadaConv;
+        d.comissao_real += comissaoRealConv;
+        d.comissao_total += comissaoRealConv;
+        d.comissao_estimada += comissaoEstimadaConv;
+
+        if (status === "concluida") d.comissao_concluida += comissaoRealConv;
+        else if (status === "pendente") d.comissao_pendente += comissaoRealConv;
+
+        const s = subIdDayMap[subDocId];
+        s.comissoes += comissaoRealConv;
+        s.comissoes_estimadas += comissaoEstimadaConv;
+      }
+
+      // ITENS / FATURAMENTO — dedup por (orderId, itemId) no dia
       for (const it of items) {
+        const itemId = String(it.itemId || "").trim();
+        if (!itemId) diag.items_sem_itemId++;
+        const itemKey = `${orderKey}_${itemId}`;
+        if (dayMap[date]._itemsVistos.has(itemKey)) continue;
+        dayMap[date]._itemsVistos.add(itemKey);
+
         const qty = parseInt(it.qty, 10) || 1;
+        diag.qty_total_normais += qty;
         const price = parseFloat(it.itemPrice || "0") || 0;
         const actual = parseFloat(it.actualAmount || "0") || 0;
-        const gmv = (actual > 0 ? actual : price * qty);
-        const commission =
-          parseFloat(it.itemCommission || it.itemTotalCommission || "0") || 0;
-        const comissaoEstimada = parseFloat(it.itemTotalCommission || it.itemCommission || "0") || 0;
-        const comissaoReal = isCancel ? 0 : commission;
+        const gmv = actual > 0 ? actual : price * qty;
         const faturamentoReal = isCancel ? 0 : gmv;
 
         const isDireta = shopeeIsDireta(it.attributionType);
         const isIndireta = isDireta ? 0 : 1;
 
         const d = dayMap[date];
-        if (!d) continue;
-        d.comissao_estimada += comissaoEstimada;
         d.vendas += qty;
-        d.vendas_diretas += isDireta;
-        d.vendas_indiretas += isIndireta;
+        d.vendas_diretas += isDireta * qty;
+        d.vendas_indiretas += isIndireta * qty;
         d.faturamento += faturamentoReal;
         d.gmv_total += faturamentoReal;
-        d.comissao_real += comissaoReal;
-        d.comissao_total += comissaoReal;
-
-        if (status === "concluida") {
-          d.comissao_concluida += comissaoReal;
-        } else if (status === "pendente") {
-          d.comissao_pendente += comissaoReal;
-        }
 
         const s = subIdDayMap[subDocId];
-        if (!s) continue;
         s.qtd_itens += qty;
         s.faturamento += faturamentoReal;
-        s.comissoes += comissaoReal;
-        s.comissoes_estimadas += comissaoEstimada;
-        s.vendas_diretas += isDireta;
-        s.vendas_indiretas += isIndireta;
+        s.vendas_diretas += isDireta * qty;
+        s.vendas_indiretas += isIndireta * qty;
 
-        const produtoId = String(it.itemId || "desconhecido").trim() || "desconhecido";
+        const produtoId = itemId || "desconhecido";
         const produtoDocId = `${date}_${produtoId}`;
         if (!produtoDayMap[produtoDocId]) {
           produtoDayMap[produtoDocId] = {
@@ -777,13 +887,24 @@ function agruparPorData(nodes) {
             faturamento: 0,
           };
         }
-        produtoDayMap[produtoDocId].comissoes += comissaoReal;
-        produtoDayMap[produtoDocId].comissoes_pendentes += isCancel ? 0 : Math.max(0, comissaoEstimada - comissaoReal);
+        const itemCommission = parseFloat(it.itemCommission || it.itemTotalCommission || "0") || 0;
+        produtoDayMap[produtoDocId].comissoes += isCancel ? 0 : itemCommission;
         produtoDayMap[produtoDocId].qtd_itens += qty;
         produtoDayMap[produtoDocId].faturamento += faturamentoReal;
       }
     }
   }
+
+  // Limpa Sets internos dos dayMap antes de retornar (não devem ir pro Firestore)
+  for (const date in dayMap) {
+    delete dayMap[date]._pedidosVistos;
+    delete dayMap[date]._itemsVistos;
+    delete dayMap[date]._conversoesAplicadas;
+  }
+
+  // ★★★ LOG DE DIAGNÓSTICO ★★★
+  console.log("[agruparPorData] DIAGNÓSTICO:", JSON.stringify(diag, null, 2));
+  console.log(`[agruparPorData] RESUMO: ${diag.nodes_recebidos} nodes → ${diag.orders_normais} pedidos válidos + ${diag.orders_perda} perdas | ${diag.items_normais} items válidos | ${diag.qty_total_normais} qty total`);
 
   return { dayMap, subIdDayMap, produtoDayMap, perdas };
 }
@@ -1443,7 +1564,7 @@ exports.shopeeBackfillNow = onRequest(
   {
     secrets: ["META_SYNC_SECRET", "SHOPEE_APP_ID", "SHOPEE_SECRET"],
     timeoutSeconds: 540,
-    memory: "1GiB",
+    memory: "2GiB",
   },
   async (req, res) => {
     // CORS: permite chamada do dashboard (Vercel)

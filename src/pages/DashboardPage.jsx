@@ -172,6 +172,80 @@ function calcularRangePeriodo(periodo, rangeCustom) {
   return null;
 }
 
+function SyncStatusBar({ ultimaAtualizacao, atualizandoPeriodo, throttleRefreshMs, onRefreshNow }) {
+  const [agora, setAgora] = useState(Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setAgora(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  const proxSync = (() => {
+    const brtMs = agora - 10800 * 1000;
+    const d = new Date(brtMs);
+    d.setMinutes(0, 0, 0);
+    d.setHours(d.getHours() + 1);
+    return new Date(d.getTime() + 10800 * 1000);
+  })();
+
+  const segParaProxSync = Math.max(0, Math.floor((proxSync.getTime() - agora) / 1000));
+  const minProx = Math.floor(segParaProxSync / 60);
+  const secProx = segParaProxSync % 60;
+
+  const idadeMin = ultimaAtualizacao
+    ? Math.floor((agora - ultimaAtualizacao.getTime()) / 60000)
+    : null;
+
+  const corStatus = atualizandoPeriodo
+    ? "bg-blue-50 border-blue-200 text-blue-800"
+    : idadeMin !== null && idadeMin < 15
+      ? "bg-emerald-50 border-emerald-200 text-emerald-800"
+      : idadeMin !== null && idadeMin < 120
+        ? "bg-amber-50 border-amber-200 text-amber-800"
+        : "bg-gray-50 border-gray-200 text-gray-700";
+
+  return (
+    <div className={`p-3 border rounded-lg flex flex-wrap items-center justify-between gap-3 ${corStatus}`}>
+      <div className="flex items-center gap-2 text-sm">
+        {atualizandoPeriodo ? (
+          <>
+            <span className="inline-block w-2 h-2 bg-blue-500 rounded-full animate-pulse" />
+            <span><strong>Sincronizando com a Shopee...</strong></span>
+          </>
+        ) : (
+          <>
+            <span
+              className={`inline-block w-2 h-2 rounded-full ${
+                idadeMin !== null && idadeMin < 15
+                  ? "bg-emerald-500"
+                  : idadeMin !== null && idadeMin < 120
+                    ? "bg-amber-500"
+                    : "bg-gray-400"
+              }`}
+            />
+            <span>
+              <strong>Última atualização:</strong>{" "}
+              {ultimaAtualizacao ? `há ${idadeMin} min` : "—"}
+            </span>
+            <span className="text-xs opacity-75">
+              · Próximo sync automático em <strong>{String(minProx).padStart(2, "0")}:{String(secProx).padStart(2, "0")}</strong>
+            </span>
+          </>
+        )}
+      </div>
+      <button
+        type="button"
+        onClick={onRefreshNow}
+        disabled={atualizandoPeriodo || throttleRefreshMs > 0}
+        className="text-xs px-3 py-1.5 bg-white border border-current rounded hover:bg-opacity-70 disabled:opacity-50 disabled:cursor-not-allowed"
+      >
+        {throttleRefreshMs > 0
+          ? `⏰ Aguarde ${Math.ceil(throttleRefreshMs / 1000)}s`
+          : "🔄 Atualizar agora"}
+      </button>
+    </div>
+  );
+}
+
 export default function DashboardPage() {
   const [data,         setData]         = useState(null);
   const [loading,      setLoading]      = useState(true);
@@ -761,12 +835,6 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {ultimaAtualizacao && (
-          <div className="text-xs text-gray-500 mt-1">
-            📊 Dados de hoje atualizados {formatarTempoAtras(ultimaAtualizacao)}
-          </div>
-        )}
-
         <div className="flex flex-wrap gap-2 items-center">
           <span className="text-sm font-medium text-gray-600">Ou escolher datas:</span>
           <input
@@ -814,11 +882,16 @@ export default function DashboardPage() {
           )}
         </div>
 
-        {atualizandoPeriodo && (
-          <div className="p-3 bg-blue-50 border border-blue-200 rounded text-sm text-blue-800">
-            ⏳ Sincronizando com a Shopee e aguardando o Firestore (até ~90s em &quot;Hoje&quot;)...
-          </div>
-        )}
+        <SyncStatusBar
+          ultimaAtualizacao={ultimaAtualizacao}
+          atualizandoPeriodo={atualizandoPeriodo}
+          throttleRefreshMs={throttleRefreshMs}
+          onRefreshNow={() => {
+            registrarRefreshPeriodo();
+            setThrottleRefreshMs(THROTTLE_REFRESH_DURACAO_MS);
+            load();
+          }}
+        />
 
         {syncErro && !atualizandoPeriodo && (
           <div className="p-3 bg-red-50 border border-red-200 rounded text-sm text-red-800">

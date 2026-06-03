@@ -19,6 +19,24 @@ import { getMetaAds, getPinterest } from "./campaignsRepository";
 import { getImportacoes } from "./importsRepository";
 import { normalizeSubId } from "../../utils/normalizeSubId";
 
+const FIX_REWRITE_KEY = "shopee_fix_v2_rewrite_done";
+
+export async function precisaReescreverPeriodo(startDate, endDate) {
+  try {
+    const key = `${FIX_REWRITE_KEY}:${startDate}:${endDate}`;
+    return !localStorage.getItem(key);
+  } catch {
+    return true;
+  }
+}
+
+export function marcarReescrita(startDate, endDate) {
+  try {
+    const key = `${FIX_REWRITE_KEY}:${startDate}:${endDate}`;
+    localStorage.setItem(key, String(Date.now()));
+  } catch {}
+}
+
 function formatDateLocalYYYYMMDD(date) {
   const d = date instanceof Date ? date : new Date(date);
   const ano = d.getFullYear();
@@ -355,13 +373,12 @@ export async function dispararBackfillPeriodo(startDate, endDate, { force = fals
 
   try {
     const ctrl = new AbortController();
-    const timeoutId = setTimeout(() => ctrl.abort(), 120000);
+    const timeoutId = setTimeout(() => ctrl.abort(), 8000);
 
     const resp = await fetch(`${url}?${params.toString()}`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,
-        "Content-Length": "0",
       },
       body: "",
       signal: ctrl.signal,
@@ -370,8 +387,8 @@ export async function dispararBackfillPeriodo(startDate, endDate, { force = fals
     clearTimeout(timeoutId);
 
     if (!resp.ok) {
-      console.warn(`[dispararBackfillPeriodo] HTTP ${resp.status}`);
-      return { ok: false, error: `http_${resp.status}` };
+      console.warn(`[dispararBackfillPeriodo] HTTP ${resp.status} — seguindo com cache`);
+      return { ok: true, backgroundOnly: true, error: `http_${resp.status}` };
     }
 
     const json = await resp.json();
@@ -382,11 +399,16 @@ export async function dispararBackfillPeriodo(startDate, endDate, { force = fals
     return { ok: true, result: json };
   } catch (err) {
     if (err.name === "AbortError") {
-      console.warn("[dispararBackfillPeriodo] Timeout — função pode estar rodando em background");
-      return { ok: true, timeout: true };
+      console.warn("[dispararBackfillPeriodo] Timeout 8s — exibindo cache (função pode estar rodando em background)");
+      return { ok: true, timeout: true, backgroundOnly: true };
     }
-    console.error("[dispararBackfillPeriodo] Erro:", err);
-    return { ok: false, error: err.message };
+    console.warn("[dispararBackfillPeriodo] Erro de rede — exibindo cache:", err?.message || String(err));
+    return {
+      ok: true,
+      networkError: true,
+      backgroundOnly: true,
+      error: err?.message || String(err),
+    };
   }
 }
 
@@ -646,19 +668,18 @@ export async function garantirDadosAtualizados(startDate, endDate) {
     const result = await dispararBackfillHoje({ force: true });
     const stats = extrairStatsSync(result.result || result);
     const throttled = result.skipped === true || stats.skipped;
-    const nodes = stats.nodes;
-    const pedidos = stats.pedidos;
     return {
       refreshed: result.ok && !throttled,
       stale: [hojeStr],
       throttled,
       error: result.error || null,
       mode: result.mode || "hoje",
-      nodes,
-      pedidos,
+      nodes: stats.nodes,
+      pedidos: stats.pedidos,
       shopeeDaily: stats.shopeeDaily,
-      semVendasNaApi: result.ok && !throttled && nodes === 0,
-      apiComDadosSemFirestore: result.ok && !throttled && nodes > 0 && (stats.shopeeDaily || 0) === 0,
+      semVendasNaApi: result.ok && !throttled && stats.nodes === 0,
+      apiComDadosSemFirestore: result.ok && !throttled && stats.nodes > 0 && (stats.shopeeDaily || 0) === 0,
+      backgroundOnly: result.backgroundOnly === true,
     };
   }
 
@@ -669,17 +690,14 @@ export async function garantirDadosAtualizados(startDate, endDate) {
 
   const refreshStart = stale[0];
   const refreshEnd = stale[stale.length - 1];
-  let result = await dispararBackfillPeriodo(refreshStart, refreshEnd);
-
-  if (!result.ok && result.error?.startsWith("http_")) {
-    result = await dispararBackfillPeriodo(refreshStart, refreshEnd, { force: true });
-  }
+  const result = await dispararBackfillPeriodo(refreshStart, refreshEnd, { force: true });
 
   return {
-    refreshed: result.ok && !result.skipped,
+    refreshed: result.ok && !result.skipped && !result.backgroundOnly,
     stale,
     throttled: result.skipped === true,
     error: result.error || null,
+    backgroundOnly: result.backgroundOnly === true,
   };
 }
 
