@@ -359,9 +359,14 @@ exports.metaSyncNow = onRequest(
 // ═══════════════════════════════════════════════════════════════════════════
 
 const SHOPEE_API_URL = "https://open-api.affiliate.shopee.com.br/graphql";
-const SHOPEE_PAGE_LIMIT = 100;
+/** Doc Shopee: máximo 500 registros por página. */
+const SHOPEE_PAGE_LIMIT = 500;
 const SHOPEE_MAX_PAGES = 1000;
+/** Entre páginas da mesma cadeia scrollId (válido por 30s). */
 const SHOPEE_PAGE_DELAY_MS = 200;
+/** Doc Shopee: nova query sem scrollId exige intervalo > 30s da anterior. */
+const SHOPEE_NEW_QUERY_DELAY_MS = 31_000;
+const SHOPEE_SCROLL_CHAIN_WARN_MS = 25_000;
 
 // Margem de segurança do cursor: refaz X minutos pra trás além do "última
 // execução". Captura conversões que entraram com atraso de eventual delay
@@ -381,7 +386,7 @@ function shopeeSignature(appId, timestamp, payload, secret) {
     .digest("hex");
 }
 
-async function shopeeFetch(query) {
+async function shopeeFetch(query, attempt = 1) {
   const appId = (process.env.SHOPEE_APP_ID || "").trim();
   const secret = (process.env.SHOPEE_SECRET || "").trim();
   if (!appId || !secret) throw new Error("SHOPEE_APP_ID/SHOPEE_SECRET não configurados");
@@ -406,6 +411,14 @@ async function shopeeFetch(query) {
 
   if (data.errors && data.errors.length > 0) {
     const messages = data.errors.map((e) => `${e.extensions?.code || "?"}: ${e.message}`).join("; ");
+    const isRateLimit = data.errors.some((e) => String(e.extensions?.code || "") === "10030")
+      || /rate limit/i.test(messages);
+    if (isRateLimit && attempt <= 4) {
+      const waitMs = attempt * 8000;
+      console.warn(`[shopee] rate limit (10030), retry ${attempt}/4 em ${waitMs}ms`);
+      await shopeeSleep(waitMs);
+      return shopeeFetch(query, attempt + 1);
+    }
     throw new Error("Shopee API: " + messages);
   }
   return data.data;
@@ -500,11 +513,24 @@ async function shopeePullRange(startTs, endTs, orderStatus = null) {
   let hasNext = true;
   let pageCount = 0;
   const statusLabel = orderStatus || "ALL";
+  const chainStartedAt = Date.now();
 
   while (hasNext && pageCount < SHOPEE_MAX_PAGES) {
     pageCount++;
     const query = buildShopeeQuery(startTs, endTs, scrollId, orderStatus);
-    const data = await shopeeFetch(query);
+    let data;
+    try {
+      data = await shopeeFetch(query);
+    } catch (err) {
+      const msg = String(err?.message || err);
+      if (pageCount === 1 || !/scroll|11001|params/i.test(msg)) throw err;
+      console.warn(`[shopee] [${statusLabel}] scrollId expirou na pág ${pageCount}, reiniciando cadeia…`);
+      scrollId = null;
+      hasNext = true;
+      pageCount = 0;
+      await shopeeSleep(SHOPEE_NEW_QUERY_DELAY_MS);
+      continue;
+    }
     const report = data?.conversionReport || {};
     const nodes = report.nodes || [];
     let pageNew = 0;
@@ -540,7 +566,13 @@ async function shopeePullRange(startTs, endTs, orderStatus = null) {
       console.warn("[shopee] hasNextPage=true mas sem scrollId. Parando por segurança.");
       break;
     }
-    if (hasNext) await shopeeSleep(SHOPEE_PAGE_DELAY_MS);
+    if (hasNext) {
+      const elapsed = Date.now() - chainStartedAt;
+      if (elapsed > SHOPEE_SCROLL_CHAIN_WARN_MS) {
+        console.warn(`[shopee] [${statusLabel}] cadeia scrollId em ${elapsed}ms (limite API ~30s)`);
+      }
+      await shopeeSleep(SHOPEE_PAGE_DELAY_MS);
+    }
   }
 
   if (duplicates > 0) {
@@ -551,28 +583,40 @@ async function shopeePullRange(startTs, endTs, orderStatus = null) {
   return { allNodes, pageCount, duplicates };
 }
 
-/** Puxa conversões por status e faz merge — evita perder UNPAID/CANCELLED na paginação. */
+/** Puxa conversões: ALL (como PromosApp) + por status (complementa paginação). */
 async function shopeePullRangeComplete(startTs, endTs) {
-  const statuses = ["UNPAID", "PENDING", "COMPLETED", "CANCELLED"];
   const merged = [];
   const seen = new Set();
   let totalPages = 0;
   let totalDuplicates = 0;
 
-  for (const status of statuses) {
-    const { allNodes, pageCount, duplicates } = await shopeePullRange(startTs, endTs, status);
+  function mergePull(allNodes, pageCount, duplicates) {
     totalPages += pageCount;
     totalDuplicates += duplicates;
     for (const node of allNodes) {
       const cid = String(node?.conversionId || "").trim();
-      const key = cid || `__noid_${node?.purchaseTime || ""}_${JSON.stringify(node?.orders?.[0]?.orderId || "")}`;
+      const orderId = String(node?.orders?.[0]?.orderId || "").trim();
+      const key = cid || `__noid_${node?.purchaseTime || ""}_${orderId}`;
       if (seen.has(key)) continue;
       seen.add(key);
       merged.push(node);
     }
   }
 
-  console.log(`[shopee] pull completo: ${merged.length} conversões únicas (${statuses.length} status) | páginas=${totalPages} | dup=${totalDuplicates}`);
+  const allPull = await shopeePullRange(startTs, endTs, null);
+  mergePull(allPull.allNodes, allPull.pageCount, allPull.duplicates);
+  console.log(`[shopee] pull ALL: ${allPull.allNodes.length} conversões | ${allPull.pageCount} páginas`);
+
+  const statuses = ["UNPAID", "PENDING", "COMPLETED", "CANCELLED"];
+  for (const status of statuses) {
+    console.log(`[shopee] aguardando ${SHOPEE_NEW_QUERY_DELAY_MS}ms antes de pull [${status}] (regra API scrollId)`);
+    await shopeeSleep(SHOPEE_NEW_QUERY_DELAY_MS);
+    const { allNodes, pageCount, duplicates } = await shopeePullRange(startTs, endTs, status);
+    mergePull(allNodes, pageCount, duplicates);
+    console.log(`[shopee] pull [${status}]: +${allNodes.length} novas únicas acumuladas=${merged.length}`);
+  }
+
+  console.log(`[shopee] pull completo: ${merged.length} conversões únicas (ALL + ${statuses.length} status) | páginas=${totalPages} | dup=${totalDuplicates}`);
   return { allNodes: merged, pageCount: totalPages, duplicates: totalDuplicates };
 }
 
@@ -707,6 +751,9 @@ function ensureDayMapEntry(dayMap, date) {
     dayMap[date] = {
       data: date,
       pedidos: 0,
+      pedidos_pendentes: 0,
+      pedidos_concluidos: 0,
+      pedidos_cancelados: 0,
       vendas: 0,
       vendas_diretas: 0,
       vendas_indiretas: 0,
@@ -895,13 +942,21 @@ function agruparPorData(nodes) {
 
       if (isUnpaid) diag.orders_unpaid += 1;
 
-      // Pedidos únicos por dia (inclui cancelados e UNPAID — igual Insights)
+      const statusClass = shopeeClassifyStatus(statusPedidoRaw);
+
+      // Pedidos: pendentes + concluídos (igual PromosApp — cancelados ficam em pedidos_cancelados)
       if (!dayEntry._pedidosVistos.has(orderKey) && items.length > 0) {
         dayEntry._pedidosVistos.add(orderKey);
-        dayEntry.pedidos += 1;
-        subEntry.pedidos += 1;
-        if (isPerda) diag.orders_perda += 1;
-        else diag.orders_normais += 1;
+        if (isPerda) {
+          dayEntry.pedidos_cancelados += 1;
+          diag.orders_perda += 1;
+        } else {
+          dayEntry.pedidos += 1;
+          subEntry.pedidos += 1;
+          diag.orders_normais += 1;
+          if (statusClass === "concluida") dayEntry.pedidos_concluidos += 1;
+          else dayEntry.pedidos_pendentes += 1;
+        }
       }
 
       // Comissão da conversão — uma vez por conversionId/orderKey por dia
@@ -909,27 +964,30 @@ function agruparPorData(nodes) {
       if (!dayEntry._conversoesAplicadas.has(conversionKeyDia)) {
         dayEntry._conversoesAplicadas.add(conversionKeyDia);
         const comissaoRealConv = (isPerda || isUnpaid) ? 0 : comissaoEstimadaConv;
-        dayEntry.comissao_estimada += comissaoEstimadaConv;
+        if (!isPerda) {
+          dayEntry.comissao_estimada += comissaoEstimadaConv;
+        }
         dayEntry.comissao_real += comissaoRealConv;
         dayEntry.comissao_total += comissaoRealConv;
 
-        const status = shopeeClassifyStatus(statusPedidoRaw);
-        if (status === "concluida" && !isPerda && !isUnpaid) {
+        if (statusClass === "concluida" && !isPerda && !isUnpaid) {
           let dataConcluida = date;
           for (const it of items) {
             const ctDate = it.completeTime ? formatUnixToBRTDate(it.completeTime) : null;
             if (ctDate) { dataConcluida = ctDate; break; }
           }
           ensureDayMapEntry(dayMap, dataConcluida).comissao_concluida += comissaoRealConv;
-        } else if ((status === "pendente" || isUnpaid) && !isPerda) {
+        } else if ((statusClass === "pendente" || isUnpaid) && !isPerda) {
           dayEntry.comissao_pendente += comissaoRealConv;
         }
 
-        subEntry.comissoes += comissaoRealConv;
-        subEntry.comissoes_estimadas += comissaoEstimadaConv;
+        if (!isPerda) {
+          subEntry.comissoes += comissaoRealConv;
+          subEntry.comissoes_estimadas += comissaoEstimadaConv;
+        }
       }
 
-      // Itens / GMV — inclui cancelados e UNPAID (painel Insights)
+      // Itens / GMV — só pendentes + concluídos no total (PromosApp)
       diag.items_total += items.length;
       if (isPerda) {
         diag.items_de_perdas += items.length;
@@ -938,7 +996,9 @@ function agruparPorData(nodes) {
         diag.items_normais += items.length;
       }
 
-      const qtyAdded = contabilizarItensPainel(dayEntry, subEntry, items, orderKey);
+      const qtyAdded = isPerda
+        ? 0
+        : contabilizarItensPainel(dayEntry, subEntry, items, orderKey);
       if (isPerda) diag.qty_total_perdas += qtyAdded;
       else diag.qty_total_normais += qtyAdded;
 
@@ -1014,6 +1074,9 @@ function criarDailyVazio(date) {
   return {
     data: date,
     pedidos: 0,
+    pedidos_pendentes: 0,
+    pedidos_concluidos: 0,
+    pedidos_cancelados: 0,
     vendas: 0,
     vendas_diretas: 0,
     vendas_indiretas: 0,
@@ -1572,6 +1635,7 @@ async function runShopeeSync({
   let perdasGravadas = 0;
   let perdasRemovidas = 0;
   let dayMapKeys = [];
+  let pedidosGravados = 0;
   if (updateDaily) {
     const { dayMap, subIdDayMap, produtoDayMap, perdas } = agruparPorData(allNodes);
     dayMapKeys = Object.keys(dayMap);
@@ -1586,6 +1650,13 @@ async function runShopeeSync({
       // Garante doc zerado para cada dia do filtro (replace completo do período)
       for (const date of datesToReplace) {
         if (!dayMap[date]) dayMap[date] = criarDailyVazio(date);
+      }
+      if (resolvedDateFilter?.type === "dates" && resolvedDateFilter.dates.size === 1) {
+        const [onlyDate] = [...resolvedDateFilter.dates];
+        if (dayMap[onlyDate]) dayMap[onlyDate].registros_api = allNodes.length;
+      } else if (resolvedDateFilter?.type === "today") {
+        const hoje = formatDateBRTYYYYMMDDNow();
+        if (dayMap[hoje]) dayMap[hoje].registros_api = allNodes.length;
       }
       perdasRemovidas = await limparLogPerdasPorDatas(datesToReplace, state, flush);
     }
@@ -1602,15 +1673,17 @@ async function runShopeeSync({
           pedidosPorData[date] = totais.pedidos || 0;
         }
       }
+      pedidosGravados = Object.values(pedidosPorData).reduce((s, n) => s + n, 0);
       await markRefreshDone([...resolvedDateFilter.dates], {
         nodes: allNodes.length,
-        pedidos: Object.values(pedidosPorData).reduce((s, n) => s + n, 0),
+        pedidos: pedidosGravados,
       });
     } else if (resolvedDateFilter?.type === "today") {
       const hoje = formatDateBRTYYYYMMDDNow();
+      pedidosGravados = dayMap[hoje]?.pedidos || 0;
       await markRefreshDone([hoje], {
         nodes: allNodes.length,
-        pedidos: dayMap[hoje]?.pedidos || 0,
+        pedidos: pedidosGravados,
       });
     }
   }
@@ -1622,6 +1695,7 @@ async function runShopeeSync({
   return {
     importacaoId,
     nodes: allNodes.length,
+    pedidos: pedidosGravados,
     produtos: prodsGravados,
     shopeeDaily: dailyGravados,
     subIdDaily: subIdDailyGravados,
@@ -1704,8 +1778,8 @@ exports.shopeeRecentDaysSync = onSchedule(
     schedule: "0 */2 * * *",
     timeZone: "America/Sao_Paulo",
     secrets: ["SHOPEE_APP_ID", "SHOPEE_SECRET"],
-    timeoutSeconds: 300,
-    memory: "512MiB",
+    timeoutSeconds: 540,
+    memory: "2GiB",
   },
   async () => {
     const now = Math.floor(Date.now() / 1000);

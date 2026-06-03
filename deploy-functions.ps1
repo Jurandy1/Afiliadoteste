@@ -1,4 +1,11 @@
-# Deploy das Cloud Functions Shopee (agregação alinhada ao painel Insights)
+# Deploy das Cloud Functions Shopee
+# Alinhado ao PromosApp / doc API Shopee:
+#   - conversionReport limit 500/pagina
+#   - pull ALL + UNPAID/PENDING/COMPLETED/CANCELLED
+#   - 31s entre consultas novas (regra scrollId)
+#
+# Uso isolado:  powershell -ExecutionPolicy Bypass -File .\deploy-functions.ps1
+# Fluxo casa:   git pull && powershell -ExecutionPolicy Bypass -File .\deploy-casa.ps1
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $node = Join-Path $root "tools\node"
@@ -17,9 +24,9 @@ if ($LASTEXITCODE -ne 0) {
   npx firebase login
 }
 
-Write-Host ">> Deploy das functions Shopee..."
+Write-Host ">> Deploy das functions Shopee (timeout 540s, 2GiB no backfill)..."
 npx firebase deploy `
   --only "functions:shopeeBackfillNow,functions:shopeeRecentDaysSync,functions:shopeeDailyReconcile,functions:shopeeIncrementalSync" `
   --project projetoafiliado-9ff07
 
-Write-Host ">> Concluido. No dashboard, filtre maio/2026 e clique Aplicar para re-sincronizar."
+Write-Host ">> Concluido."

@@ -17,7 +17,7 @@ import SortTh from "../components/tables/SortTh";
 import PaginationBar from "../components/tables/PaginationBar";
 import Badge from "../components/cards/Badge";
 import { ExternalLink } from "lucide-react";
-import { isValidDateRange } from "../utils/dates";
+import { brtYesterdayYYYYMMDD, formatDateDisplayPT, isDiaRecenteBRT, isValidDateRange } from "../utils/dates";
 import { db } from "../services/firebase/client";
 
 function readDashboardSettings() {
@@ -114,6 +114,10 @@ function calcularRangePeriodo(periodo, rangeApplied) {
 
   if (periodo === "hoje") {
     return { startDate: hojeStr, endDate: hojeStr };
+  }
+  if (periodo === "ontem") {
+    const ontemStr = brtYesterdayYYYYMMDD();
+    return { startDate: ontemStr, endDate: ontemStr };
   }
   if (periodo === "custom") {
     if (!isValidDateRange(rangeApplied?.start, rangeApplied?.end)) {
@@ -242,7 +246,7 @@ function SyncStatusBar({ ultimaAtualizacao, atualizandoPeriodo, throttleRefreshM
           </>
         )}
       </div>
-      {periodoFiltro !== "hoje" && (
+      {periodoFiltro !== "hoje" && periodoFiltro !== "ontem" && (
         <button
           type="button"
           onClick={onRefreshNow}
@@ -298,7 +302,8 @@ export default function DashboardPage() {
   const [resumoSemana, setResumoSemana] = useState(null);
   const [subIdsPanel, setSubIdsPanel] = useState(null);
   const [subIdDiagnosticsPanel, setSubIdDiagnosticsPanel] = useState(null);
-  const abortRef = useRef(false);
+  const loadGenerationRef = useRef(0);
+  const mountedRef = useRef(true);
   const subIdLoadedRef = useRef(false);
   const listenerHojeAtivoRef = useRef(false);
   const forceSyncRef = useRef(false);
@@ -317,16 +322,18 @@ export default function DashboardPage() {
   }, []);
 
   const load = useCallback(async () => {
-    abortRef.current = false;
+    const gen = ++loadGenerationRef.current;
+    const stale = () => gen !== loadGenerationRef.current;
     setLoading(true);
     setLoadError(null);
     try {
       const s = readDashboardSettings();
+      if (stale()) return;
       setSettings(s);
       if (!subIdLoadedRef.current) {
         subIdLoadedRef.current = true;
         getSubIdPanelData(s).then(({ subIds, subIdDiagnostics }) => {
-          if (abortRef.current) return;
+          if (stale()) return;
           setSubIdsPanel(subIds);
           setSubIdDiagnosticsPanel(subIdDiagnostics);
         }).catch(() => {});
@@ -337,10 +344,10 @@ export default function DashboardPage() {
               const data = d.data() || {};
               estimadas[d.id] = Number(data.comissoes_estimadas || 0);
             });
-            if (!abortRef.current) setSubIdEstimadasMap(estimadas);
+            if (!stale()) setSubIdEstimadasMap(estimadas);
           })
           .catch(() => {
-            if (!abortRef.current) setSubIdEstimadasMap({});
+            if (!stale()) setSubIdEstimadasMap({});
           });
       }
       const range = calcularRangePeriodo(periodoFiltro, rangeCustomApplied);
@@ -358,8 +365,16 @@ export default function DashboardPage() {
         setSyncInfo(null);
       }
 
+      const isDiaUnicoRecente = Boolean(
+        range?.startDate
+        && range.startDate === range.endDate
+        && isDiaRecenteBRT(range.startDate, formatDateBRTYYYYMMDD())
+      );
+
       const syncPromise = precisaSync
-        ? garantirDadosAtualizados(range.startDate, range.endDate, { forceAll: forceSync })
+        ? garantirDadosAtualizados(range.startDate, range.endDate, {
+          forceAll: forceSync || (range.startDate === range.endDate && isDiaUnicoRecente),
+        })
         : Promise.resolve(null);
 
       let [kpisFromSumario, produtosPage, subIdsFiltrados, produtosPeriodo, perdas, liquidada] = await Promise.all([
@@ -371,10 +386,11 @@ export default function DashboardPage() {
         getComissaoLiquidadaByPeriod(dataInicioBusca, dataFimBusca).catch(() => null),
       ]);
 
-      if (abortRef.current) return;
+      if (stale()) return;
       setComissaoLiquidada(liquidada);
 
       const sync = await syncPromise;
+      if (stale()) return;
       if (precisaSync) {
         if (sync?.error === "config_missing") {
           syncErroMsg = "Sync não configurado: VITE_BACKFILL_URL ou VITE_BACKFILL_SECRET ausentes.";
@@ -386,29 +402,38 @@ export default function DashboardPage() {
           syncMensagem = `API retornou ${sync.nodes} conversão(ões), aguardando gravação no Firestore…`;
         } else if (sync?.throttled) {
           syncMensagem = "Sincronização ignorada (muito recente). Exibindo cache do Firestore.";
+        } else if (sync?.refreshed && (sync?.nodes > 0 || sync?.pedidos > 0)) {
+          syncMensagem = `API Shopee: ${sync.nodes || 0} registros → ${sync.pedidos || 0} pedidos gravados no Firestore.`;
         }
         if (syncErroMsg) setSyncErro(syncErroMsg);
         if (syncMensagem) setSyncInfo(syncMensagem);
         setAtualizandoPeriodo(false);
 
-        if (sync?.refreshed || sync?.apiComDadosSemFirestore) {
+        if (
+          sync?.refreshed
+          || sync?.apiComDadosSemFirestore
+          || sync?.forced
+          || sync?.backgroundOnly
+          || (sync?.stale?.length > 0 && !sync?.throttled)
+          || (isDiaUnicoRecente && !sync?.throttled)
+        ) {
           const kpisAtualizados = await carregarKPIsDoPeriodo(dataInicioBusca, dataFimBusca, {
-            afterSync: true,
-            maxWaitMs: periodoFiltro === "hoje" ? 35000 : 20000,
+            afterSync: range.startDate === range.endDate,
+            maxWaitMs: (periodoFiltro === "hoje" || periodoFiltro === "ontem" || isDiaUnicoRecente || forceSync) ? 45000 : 30000,
           }).catch(() => null);
           if (kpisAtualizados) kpisFromSumario = kpisAtualizados;
         }
 
-        if (periodoFiltro === "hoje") {
+        if (periodoFiltro === "hoje" || periodoFiltro === "ontem") {
           getUltimaAtualizacaoHoje().then((ts) => {
-            if (!abortRef.current) setUltimaAtualizacao(ts);
+            if (!stale()) setUltimaAtualizacao(ts);
           });
         }
       }
 
       if (!kpisFromSumario) {
         const result = await getDashboardData(s);
-        if (abortRef.current) return;
+        if (stale()) return;
         setData(result);
         setProdCursor({ lastDoc: null, hasMore: false });
         setProdSearch("");
@@ -478,14 +503,31 @@ export default function DashboardPage() {
         setSyncInfo("Aguardando dados de hoje no Firestore. O painel atualiza sozinho quando o sync gravar métricas.");
       }
     } catch (e) {
-      if (!abortRef.current) setLoadError(e);
+      if (!stale()) setLoadError(e);
     } finally {
-      if (!abortRef.current) {
+      if (!stale()) {
         setLoading(false);
         setAtualizandoPeriodo(false);
       }
     }
   }, [periodoFiltro, rangeCustomApplied]);
+
+  const aplicarFiltroCustom = useCallback(() => {
+    if (!isValidDateRange(rangeCustomDraft.start, rangeCustomDraft.end)) {
+      setRangeCustomErro("Informe datas válidas (início ≤ fim).");
+      return;
+    }
+    setRangeCustomErro(null);
+    setRangeCustomApplied({ start: rangeCustomDraft.start, end: rangeCustomDraft.end });
+    forceSyncRef.current = true;
+    registrarRefreshPeriodo();
+    setThrottleRefreshMs(THROTTLE_REFRESH_DURACAO_MS);
+    setPeriodoFiltro("custom");
+  }, [rangeCustomDraft]);
+
+  const customDraftPendente = periodoFiltro !== "custom"
+    || rangeCustomDraft.start !== rangeCustomApplied.start
+    || rangeCustomDraft.end !== rangeCustomApplied.end;
 
   useEffect(() => {
     if (periodoFiltro !== "hoje") {
@@ -547,19 +589,26 @@ export default function DashboardPage() {
   }, [periodoFiltro, data]);
 
   useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
+  useEffect(() => {
     load();
+    const gen = loadGenerationRef.current;
     getUltimaAtualizacaoHoje().then((ts) => {
-      if (!abortRef.current) setUltimaAtualizacao(ts);
+      if (gen !== loadGenerationRef.current) return;
+      setUltimaAtualizacao(ts);
     });
     Promise.all([
       getComparacaoMensal().catch(() => null),
       getResumoSemana().catch(() => null),
     ]).then(([comp, sem]) => {
-      if (abortRef.current) return;
+      if (gen !== loadGenerationRef.current) return;
       setComparacaoMensal(comp);
       setResumoSemana(sem);
     });
-    return () => { abortRef.current = true; };
+    return () => { loadGenerationRef.current += 1; };
   }, [load]);
 
   const filteredSorted = useMemo(() => {
@@ -598,13 +647,13 @@ export default function DashboardPage() {
     const handle = window.setTimeout(async () => {
       try {
         const res = await buscarProdutos(t);
-        if (abortRef.current) return;
+        if (!mountedRef.current) return;
         setProdSearchResults(res);
       } catch {
-        if (abortRef.current) return;
+        if (!mountedRef.current) return;
         setProdSearchResults([]);
       } finally {
-        if (abortRef.current) return;
+        if (!mountedRef.current) return;
         setProdSearchLoading(false);
       }
     }, 400);
@@ -621,7 +670,7 @@ export default function DashboardPage() {
     setLoadingMore(true);
     try {
       const next = await getProdutosPagina(50, prodCursor.lastDoc);
-      if (abortRef.current) return;
+      if (!mountedRef.current) return;
       const novos = next?.produtos || [];
       setData((prev) => {
         const prevProdutos = prev?.produtos || [];
@@ -633,7 +682,7 @@ export default function DashboardPage() {
       });
       setProdCursor({ lastDoc: next?.lastDoc || null, hasMore: !!next?.hasMore });
     } finally {
-      if (!abortRef.current) setLoadingMore(false);
+      if (mountedRef.current) setLoadingMore(false);
     }
   }, [loadingMore, prodCursor, prodSearchResults]);
 
@@ -816,6 +865,7 @@ export default function DashboardPage() {
           {[
             { id: "all", label: "Todo período" },
             { id: "hoje", label: "📅 Hoje" },
+            { id: "ontem", label: "📅 Ontem" },
             { id: "7d", label: "7 dias" },
             { id: "14d", label: "14 dias" },
             { id: "30d", label: "30 dias" },
@@ -825,7 +875,7 @@ export default function DashboardPage() {
             <button
               key={opt.id}
               onClick={() => {
-                if (opt.id !== "all" && opt.id !== "hoje") {
+                if (opt.id !== "all" && opt.id !== "hoje" && opt.id !== "ontem") {
                   registrarRefreshPeriodo();
                   setThrottleRefreshMs(THROTTLE_REFRESH_DURACAO_MS);
                 }
@@ -846,7 +896,7 @@ export default function DashboardPage() {
               {opt.label}
             </button>
           ))}
-          {periodoFiltro === "hoje" && (
+          {periodoFiltro === "hoje" || periodoFiltro === "ontem" ? (
             <button
               type="button"
               onClick={async () => {
@@ -863,13 +913,13 @@ export default function DashboardPage() {
                   ? `⏰ ${Math.ceil(throttleRefreshMs / 1000)}s`
                   : "🔄 Atualizar agora"}
             </button>
-          )}
+          ) : null}
           <div className="ml-auto">
             <AlertasBell />
           </div>
         </div>
 
-        <div className="flex flex-wrap gap-2 items-center">
+        <div className={`flex flex-wrap gap-2 items-center p-2 rounded-lg border ${periodoFiltro === "custom" ? "border-blue-400 bg-blue-50/50" : "border-transparent"}`}>
           <span className="text-sm font-medium text-gray-600">Ou escolher datas:</span>
           <input
             type="date"
@@ -879,7 +929,7 @@ export default function DashboardPage() {
               setRangeCustomDraft((prev) => ({ ...prev, start: e.target.value }));
             }}
             className="px-2 py-1 border border-gray-300 rounded text-sm"
-            max={formatDateLocalYYYYMMDD(new Date())}
+            max={formatDateBRTYYYYMMDD()}
           />
           <span className="text-sm text-gray-500">até</span>
           <input
@@ -889,22 +939,15 @@ export default function DashboardPage() {
               setRangeCustomErro(null);
               setRangeCustomDraft((prev) => ({ ...prev, end: e.target.value }));
             }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") aplicarFiltroCustom();
+            }}
             className="px-2 py-1 border border-gray-300 rounded text-sm"
-            max={formatDateLocalYYYYMMDD(new Date())}
+            max={formatDateBRTYYYYMMDD()}
           />
           <button
-            onClick={() => {
-              if (!isValidDateRange(rangeCustomDraft.start, rangeCustomDraft.end)) {
-                setRangeCustomErro("Informe datas válidas (início ≤ fim).");
-                return;
-              }
-              setRangeCustomErro(null);
-              setRangeCustomApplied({ start: rangeCustomDraft.start, end: rangeCustomDraft.end });
-              forceSyncRef.current = true;
-              registrarRefreshPeriodo();
-              setThrottleRefreshMs(THROTTLE_REFRESH_DURACAO_MS);
-              setPeriodoFiltro("custom");
-            }}
+            type="button"
+            onClick={aplicarFiltroCustom}
             disabled={!rangeCustomDraft.start || !rangeCustomDraft.end || atualizandoPeriodo}
             className="px-3 py-1 rounded text-sm bg-green-600 text-white hover:bg-green-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
           >
@@ -912,6 +955,7 @@ export default function DashboardPage() {
           </button>
           {periodoFiltro === "custom" && (
             <button
+              type="button"
               onClick={() => {
                 setRangeCustomDraft({ start: "", end: "" });
                 setRangeCustomApplied({ start: "", end: "" });
@@ -923,7 +967,16 @@ export default function DashboardPage() {
               Limpar
             </button>
           )}
+          {customDraftPendente && rangeCustomDraft.start && rangeCustomDraft.end && (
+            <span className="text-xs text-amber-700 font-medium">
+              Clique em Aplicar — o filtro ativo ainda é outro período
+            </span>
+          )}
         </div>
+
+        <p className="text-xs text-gray-500 -mt-1">
+          Dica: para maio inteiro, use o botão <strong>Mês anterior</strong> (estamos em junho). As datas customizadas só entram após <strong>Aplicar</strong>.
+        </p>
 
         {rangeCustomErro && (
           <div className="p-2 bg-red-50 border border-red-200 rounded text-sm text-red-800">
@@ -933,7 +986,8 @@ export default function DashboardPage() {
 
         {periodoFiltro === "custom" && rangeCustomApplied.start && rangeCustomApplied.end && (
           <div className="text-xs text-gray-600">
-            Período ativo: <strong>{rangeCustomApplied.start}</strong> até <strong>{rangeCustomApplied.end}</strong>
+            Período ativo: <strong>{formatDateDisplayPT(rangeCustomApplied.start)}</strong> até <strong>{formatDateDisplayPT(rangeCustomApplied.end)}</strong>
+            {" "}(<span className="font-mono text-gray-500">{rangeCustomApplied.start} → {rangeCustomApplied.end}</span>)
             {" "}— sincronizando com a API Shopee (totalCommission / data da compra, fuso BRT).
           </div>
         )}

@@ -18,6 +18,12 @@ import { getProdutos, getCliques, getSubIdVendas } from "./productsRepository";
 import { getMetaAds, getPinterest } from "./campaignsRepository";
 import { getImportacoes } from "./importsRepository";
 import { normalizeSubId } from "../../utils/normalizeSubId";
+import {
+  brtYesterdayYYYYMMDD,
+  daysBetweenDatesBRT,
+  formatDateBRTYYYYMMDD as formatDateBRTFromUtil,
+  isDiaRecenteBRT,
+} from "../../utils/dates";
 
 const FIX_REWRITE_KEY = "shopee_fix_v2_rewrite_done";
 
@@ -47,9 +53,10 @@ function formatDateLocalYYYYMMDD(date) {
 
 /** Data de hoje no fuso BRT (UTC-3), igual ao backend Shopee. */
 export function formatDateBRTYYYYMMDD(date = new Date()) {
-  const ms = date instanceof Date ? date.getTime() : new Date(date).getTime();
-  return new Date((ms / 1000 - 10800) * 1000).toISOString().split("T")[0];
+  return formatDateBRTFromUtil(date);
 }
+
+export { brtYesterdayYYYYMMDD, isDiaRecenteBRT };
 
 async function dispararBackfillLegacyToday() {
   const url = import.meta.env.VITE_BACKFILL_URL;
@@ -376,8 +383,11 @@ export async function dispararBackfillPeriodo(startDate, endDate, { force = fals
   if (force) params.set("force", "1");
 
   try {
+    const isSingleDay = startDate === endDate;
+    /** Dia único: pull ALL + 4 status com 31s entre cada (~3–5 min na function). */
+    const timeoutMs = isSingleDay ? 360000 : 8000;
     const ctrl = new AbortController();
-    const timeoutId = setTimeout(() => ctrl.abort(), 8000);
+    const timeoutId = setTimeout(() => ctrl.abort(), timeoutMs);
 
     const resp = await fetch(`${url}?${params.toString()}`, {
       method: "POST",
@@ -447,16 +457,15 @@ function listDatesBetween(startStr, endStr) {
 }
 
 function daysBetweenDates(dateStr, refStr) {
-  const a = Date.parse(`${dateStr}T12:00:00-03:00`);
-  const b = Date.parse(`${refStr}T12:00:00-03:00`);
-  return Math.round((b - a) / 86400000);
+  return daysBetweenDatesBRT(dateStr, refStr);
 }
 
 function getStaleThresholdMs(dateStr) {
   const hojeStr = formatDateBRTYYYYMMDD();
   const diff = daysBetweenDates(dateStr, hojeStr);
   if (diff <= 0) return 5 * 60 * 1000;
-  if (diff <= 2) return 3 * 60 * 60 * 1000;
+  if (diff === 1) return 30 * 60 * 1000;
+  if (diff <= 2) return 60 * 60 * 1000;
   if (diff <= 7) return 12 * 60 * 60 * 1000;
   return 7 * 24 * 60 * 60 * 1000;
 }
@@ -558,7 +567,7 @@ export async function getDatasDesatualizadas(startDate, endDate) {
       }
       const data = snap.data() || {};
       const hojeStr = formatDateBRTYYYYMMDD();
-      if (dateStr === hojeStr && isDailyMetricsVazio(data)) {
+      if (isDailyMetricsVazio(data)) {
         stale.push(dateStr);
         return;
       }
@@ -664,21 +673,31 @@ export async function getDashboardKPIsByPeriodWithRetry(startDate, endDate) {
  * Garante que os dias do período estão atualizados antes de exibir KPIs.
  * "Hoje" sempre sincroniza (dados ao vivo). Demais dias só se stale.
  */
+async function sincronizarDiaUnico(dateStr, { label = "dia_unico" } = {}) {
+  const result = await dispararBackfillPeriodo(dateStr, dateStr, { force: true });
+  const stats = extrairStatsSync(result.result || result);
+  const throttled = result.skipped === true || stats.skipped;
+  return {
+    refreshed: result.ok && !throttled && !result.backgroundOnly,
+    stale: [dateStr],
+    throttled,
+    error: result.error || null,
+    mode: label,
+    nodes: stats.nodes,
+    pedidos: stats.pedidos,
+    shopeeDaily: stats.shopeeDaily,
+    semVendasNaApi: result.ok && !throttled && stats.nodes === 0,
+    apiComDadosSemFirestore: result.ok && !throttled && stats.nodes > 0 && (stats.shopeeDaily || 0) === 0,
+    backgroundOnly: result.backgroundOnly === true,
+    forced: true,
+  };
+}
+
 export async function garantirDadosAtualizados(startDate, endDate, { forceAll = false } = {}) {
   const hojeStr = formatDateBRTYYYYMMDD();
-  const isApenasHoje = startDate === endDate && startDate === hojeStr;
-
-  if (forceAll && !isApenasHoje) {
-    const result = await dispararBackfillPeriodo(startDate, endDate, { force: true });
-    return {
-      refreshed: result.ok && !result.skipped && !result.backgroundOnly,
-      stale: listDatesBetween(startDate, endDate),
-      throttled: result.skipped === true,
-      error: result.error || null,
-      backgroundOnly: result.backgroundOnly === true,
-      forced: true,
-    };
-  }
+  const ontemStr = brtYesterdayYYYYMMDD();
+  const isDiaUnico = startDate === endDate;
+  const isApenasHoje = isDiaUnico && startDate === hojeStr;
 
   if (isApenasHoje) {
     const result = await dispararBackfillHoje({ force: true });
@@ -696,6 +715,29 @@ export async function garantirDadosAtualizados(startDate, endDate, { forceAll = 
       semVendasNaApi: result.ok && !throttled && stats.nodes === 0,
       apiComDadosSemFirestore: result.ok && !throttled && stats.nodes > 0 && (stats.shopeeDaily || 0) === 0,
       backgroundOnly: result.backgroundOnly === true,
+      forced: true,
+    };
+  }
+
+  if (isDiaUnico && isDiaRecenteBRT(startDate, hojeStr) && startDate !== hojeStr) {
+    return sincronizarDiaUnico(startDate, {
+      label: startDate === ontemStr ? "ontem" : "dia_recente",
+    });
+  }
+
+  if (forceAll && isDiaUnico) {
+    return sincronizarDiaUnico(startDate, { label: "force_dia" });
+  }
+
+  if (forceAll && !isDiaUnico) {
+    const result = await dispararBackfillPeriodo(startDate, endDate, { force: true });
+    return {
+      refreshed: result.ok && !result.skipped && !result.backgroundOnly,
+      stale: listDatesBetween(startDate, endDate),
+      throttled: result.skipped === true,
+      error: result.error || null,
+      backgroundOnly: result.backgroundOnly === true,
+      forced: true,
     };
   }
 
