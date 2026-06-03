@@ -1307,20 +1307,11 @@ export async function getGastoMetaDiarioByPeriod(startDate, endDate) {
   }
 }
 
-export async function getSubIdsByPeriod(startDate, endDate) {
+export async function getSubIdsByPeriod(startDate, endDate, { enrichMeta = true, settings = {} } = {}) {
   if (!startDate || !endDate) return [];
 
-  const formataData = (d) => {
-    if (typeof d === "string" && d.length === 10) return d;
-    const dt = new Date(d);
-    const ano = dt.getFullYear();
-    const mes = String(dt.getMonth() + 1).padStart(2, "0");
-    const dia = String(dt.getDate()).padStart(2, "0");
-    return `${ano}-${mes}-${dia}`;
-  };
-
-  const startStr = formataData(startDate);
-  const endStr = formataData(endDate);
+  const startStr = toISODateStr(startDate);
+  const endStr = toISODateStr(endDate);
 
   const q = query(
     collection(db, "subid_daily"),
@@ -1346,11 +1337,18 @@ export async function getSubIdsByPeriod(startDate, endDate) {
         qtd_itens: 0,
         total_vendas: 0,
         pedidos: 0,
+        gasto: 0,
+        lucro: 0,
+        roi: 0,
+        cliques_anuncio: 0,
+        cliques_shopee: 0,
+        batimento: 0,
+        ticket_medio: 0,
       };
     }
 
-    subIdMap[subid].comissoes += Number(d.comissoes || 0);
-    subIdMap[subid].comissoes_estimadas += Number(d.comissoes_estimadas || 0);
+    subIdMap[subid].comissoes_estimadas += Number(d.comissoes_estimadas || d.comissoes || 0);
+    subIdMap[subid].comissoes += Number(d.comissoes_estimadas || d.comissoes || 0);
     subIdMap[subid].faturamento += Number(d.faturamento || 0);
     subIdMap[subid].vendas_diretas += Number(d.vendas_diretas || 0);
     subIdMap[subid].vendas_indiretas += Number(d.vendas_indiretas || 0);
@@ -1359,23 +1357,138 @@ export async function getSubIdsByPeriod(startDate, endDate) {
     subIdMap[subid].pedidos += Number(d.pedidos || 0);
   });
 
-  return Object.values(subIdMap);
+  let rows = Object.values(subIdMap).map((r) => {
+    const ticket = r.total_vendas > 0 ? r.faturamento / r.total_vendas : 0;
+    return { ...r, ticket_medio: ticket };
+  });
+
+  if (enrichMeta) {
+    rows = await enrichSubIdsComMetaNoPeriodo(rows, startStr, endStr, settings);
+  }
+
+  return rows.sort((a, b) => (b.comissoes_estimadas || 0) - (a.comissoes_estimadas || 0));
+}
+
+function toISODateStr(d) {
+  if (typeof d === "string" && d.length === 10) return d;
+  const dt = new Date(d);
+  const ano = dt.getFullYear();
+  const mes = String(dt.getMonth() + 1).padStart(2, "0");
+  const dia = String(dt.getDate()).padStart(2, "0");
+  return `${ano}-${mes}-${dia}`;
+}
+
+function calcOverlapRatio(filterStart, filterEnd, itemStart, itemEnd) {
+  if (!filterStart || !filterEnd || !itemStart || !itemEnd) return 0;
+  const fStart = new Date(`${filterStart}T00:00:00`).getTime();
+  const fEnd = new Date(`${filterEnd}T23:59:59`).getTime();
+  const iStart = new Date(`${itemStart}T00:00:00`).getTime();
+  const iEnd = new Date(`${itemEnd}T23:59:59`).getTime();
+  if (!Number.isFinite(fStart) || !Number.isFinite(fEnd) || !Number.isFinite(iStart) || !Number.isFinite(iEnd)) return 0;
+  if (fEnd < iStart || fStart > iEnd) return 0;
+  const overlapStart = Math.max(fStart, iStart);
+  const overlapEnd = Math.min(fEnd, iEnd);
+  const overlapMs = overlapEnd - overlapStart;
+  const itemTotalMs = iEnd - iStart;
+  if (itemTotalMs <= 0) return 0;
+  return Math.max(0, Math.min(1, overlapMs / itemTotalMs));
+}
+
+async function enrichSubIdsComMetaNoPeriodo(subIds, startStr, endStr, settings = {}) {
+  const { impostoMeta = 0, impostoNf = 0 } = settings;
+  const [metaAds, pinterest, cliquesData] = await Promise.all([
+    getMetaAds(null).catch(() => []),
+    getPinterest(null).catch(() => []),
+    getCliques(null).catch(() => []),
+  ]);
+
+  const metaBySubId = {};
+  metaAds.forEach((m) => {
+    const sid = m.subid || normalizeSubId(m.nomeAnuncio || "");
+    if (!sid) return;
+    const itemStart = m.dataInicio || m.date || null;
+    const itemEnd = m.dataFim || m.date || itemStart;
+    const ratio = calcOverlapRatio(startStr, endStr, itemStart, itemEnd);
+    if (ratio <= 0) return;
+    if (!metaBySubId[sid]) metaBySubId[sid] = { gasto: 0, cliques_anuncio: 0 };
+    metaBySubId[sid].gasto += (m.valorUsado || 0) * ratio;
+    metaBySubId[sid].cliques_anuncio += (m.resultados || 0) * ratio;
+  });
+
+  const pinBySubId = {};
+  pinterest.forEach((p) => {
+    const sid = p.subid || normalizeSubId(p.adName || "");
+    if (!sid) return;
+    const itemStart = p.dataInicio || p.date || null;
+    const itemEnd = p.dataFim || p.date || itemStart;
+    const ratio = calcOverlapRatio(startStr, endStr, itemStart, itemEnd);
+    if (ratio <= 0) return;
+    if (!pinBySubId[sid]) pinBySubId[sid] = { gasto: 0, cliques_anuncio: 0 };
+    pinBySubId[sid].gasto += (p.spend || 0) * ratio;
+    pinBySubId[sid].cliques_anuncio += (p.pinClicks || 0) * ratio;
+  });
+
+  const cliquesBySubId = {};
+  cliquesData.forEach((c) => {
+    const sid = c.sub_id_norm || c.sub_id || "";
+    const data = c.data || c.date || null;
+    if (!sid || !data) return;
+    if (data < startStr || data > endStr) return;
+    cliquesBySubId[sid] = (cliquesBySubId[sid] || 0) + (c.cliques || 0);
+  });
+
+  return subIds.map((r) => {
+    const sid = r.subid || r.id || "";
+    const gastoAds = (metaBySubId[sid]?.gasto || 0) + (pinBySubId[sid]?.gasto || 0);
+    const cliquesAds = (metaBySubId[sid]?.cliques_anuncio || 0) + (pinBySubId[sid]?.cliques_anuncio || 0);
+    const clShopee = cliquesBySubId[sid] || 0;
+    const comissao = r.comissoes_estimadas || r.comissoes || 0;
+    const imposto = (gastoAds * (impostoMeta || 0) / 100) + (comissao * (impostoNf || 0) / 100);
+    const lucro = comissao - gastoAds - imposto;
+    return {
+      ...r,
+      gasto: gastoAds,
+      cliques_anuncio: cliquesAds,
+      cliques_shopee: clShopee,
+      batimento: cliquesAds > 0 ? clShopee / cliquesAds : 0,
+      lucro,
+      roi: gastoAds > 0 ? lucro / gastoAds : 0,
+    };
+  });
+}
+
+export function mapProdutosPeriodoParaPainel(produtosPeriodo, cadastroPorId = {}) {
+  return (produtosPeriodo || []).map((p) => {
+    const pid = String(p.produto_id || "");
+    const cad = cadastroPorId[pid] || cadastroPorId[p.nome] || {};
+    const comissaoEst = Number(p.comissao_estimada ?? p.comissoes ?? 0);
+    return {
+      id: pid || p.nome,
+      produto_id: pid,
+      nome: p.nome || cad.nome || "Produto",
+      comissao_concluida: comissaoEst,
+      comissao_pendente: Number(p.comissoes_pendentes || 0),
+      comissao_estimada: comissaoEst,
+      vendas: Number(p.qtd_itens || 0),
+      faturamento: Number(p.faturamento || 0),
+      cliques: 0,
+      conv_rate: 0,
+      roi: 0,
+      investimento: 0,
+      origem: "Shopee",
+      status: cad.status || "Validando",
+      link_afiliado: cad.link_afiliado || null,
+      loja: cad.loja || null,
+      fonte: "produto_daily",
+    };
+  });
 }
 
 export async function getProdutosByPeriod(startDate, endDate) {
   if (!startDate || !endDate) return [];
 
-  const formataData = (d) => {
-    if (typeof d === "string" && d.length === 10) return d;
-    const dt = new Date(d);
-    const ano = dt.getFullYear();
-    const mes = String(dt.getMonth() + 1).padStart(2, "0");
-    const dia = String(dt.getDate()).padStart(2, "0");
-    return `${ano}-${mes}-${dia}`;
-  };
-
-  const startStr = formataData(startDate);
-  const endStr = formataData(endDate);
+  const startStr = toISODateStr(startDate);
+  const endStr = toISODateStr(endDate);
 
   const q = query(
     collection(db, "produto_daily"),
@@ -1393,18 +1506,22 @@ export async function getProdutosByPeriod(startDate, endDate) {
         produto_id: pid,
         nome: d.nome || "Produto",
         comissoes: 0,
+        comissao_estimada: 0,
         comissoes_pendentes: 0,
+        comissoes_concluidas: 0,
         qtd_itens: 0,
         faturamento: 0,
       };
     }
-    produtoMap[pid].comissoes += (d.comissoes || 0);
-    produtoMap[pid].comissoes_pendentes += (d.comissoes_pendentes || 0);
-    produtoMap[pid].qtd_itens += (d.qtd_itens || 0);
-    produtoMap[pid].faturamento += (d.faturamento || 0);
+    produtoMap[pid].comissoes += Number(d.comissao_estimada ?? d.comissoes ?? 0);
+    produtoMap[pid].comissao_estimada += Number(d.comissao_estimada ?? d.comissoes ?? 0);
+    produtoMap[pid].comissoes_pendentes += Number(d.comissoes_pendentes || 0);
+    produtoMap[pid].comissoes_concluidas += Number(d.comissoes_concluidas || 0);
+    produtoMap[pid].qtd_itens += Number(d.qtd_itens || 0);
+    produtoMap[pid].faturamento += Number(d.faturamento || 0);
   });
 
-  return Object.values(produtoMap).sort((a, b) => (b.comissoes || 0) - (a.comissoes || 0));
+  return Object.values(produtoMap).sort((a, b) => (b.comissao_estimada || 0) - (a.comissao_estimada || 0));
 }
 
 export async function getPerdasByPeriod(startDate, endDate) {

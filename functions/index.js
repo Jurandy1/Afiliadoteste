@@ -1024,8 +1024,8 @@ function agruparPorData(nodes) {
         }
       }
 
-      // Produto daily (só pedidos ativos para comissão de produto)
-      if (!isPerda && !isUnpaid) {
+      // Produto daily — pendentes + concluídos (PromosApp); inclui UNPAID
+      if (!isPerda) {
         for (const it of items) {
           const itemFraudStatus = String(it.fraudStatus || "").toUpperCase().trim();
           if (itemFraudStatus === "FRAUD") continue;
@@ -1038,7 +1038,9 @@ function agruparPorData(nodes) {
               produto_id: produtoId,
               nome: String(it.itemName || "Produto"),
               comissoes: 0,
+              comissao_estimada: 0,
               comissoes_pendentes: 0,
+              comissoes_concluidas: 0,
               qtd_itens: 0,
               faturamento: 0,
             };
@@ -1047,10 +1049,16 @@ function agruparPorData(nodes) {
           const price = parseFloat(it.itemPrice || "0") || 0;
           const actual = parseFloat(it.actualAmount || "0") || 0;
           const gmv = actual > 0 ? actual : price * qty;
-          const itemCommission = parseFloat(it.itemCommission || it.itemTotalCommission || "0") || 0;
-          produtoDayMap[produtoDocId].comissoes += itemCommission;
+          const itemCommEst = parseFloat(it.itemTotalCommission || it.itemCommission || "0") || 0;
+          produtoDayMap[produtoDocId].comissao_estimada += itemCommEst;
+          produtoDayMap[produtoDocId].comissoes += itemCommEst;
           produtoDayMap[produtoDocId].qtd_itens += qty;
           produtoDayMap[produtoDocId].faturamento += gmv;
+          if (statusClass === "concluida" && !isUnpaid) {
+            produtoDayMap[produtoDocId].comissoes_concluidas += itemCommEst;
+          } else {
+            produtoDayMap[produtoDocId].comissoes_pendentes += itemCommEst;
+          }
         }
       }
     }

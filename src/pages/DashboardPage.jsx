@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useMemo, useState } from "react";
 import { collection, getDocs } from "firebase/firestore";
 import { BarChart3, DollarSign, ShoppingBag, Target, TrendingUp, Ticket } from "lucide-react";
-import { aguardarMetricasComListener, buscarProdutos, carregarKPIsDoPeriodo, formatDateBRTYYYYMMDD, garantirDadosAtualizados, getComparacaoMensal, getComissaoLiquidadaByPeriod, getDashboardData, getDashboardKPIs, getDashboardKPIsByPeriod, getPerdasByPeriod, getProdutosByPeriod, getProdutosPagina, getResumoSemana, getSubIdPanelData, getSubIdsByPeriod, getUltimaAtualizacaoHoje } from "../services/repositories/metricsRepository";
+import { aguardarMetricasComListener, buscarProdutos, carregarKPIsDoPeriodo, formatDateBRTYYYYMMDD, garantirDadosAtualizados, getComparacaoMensal, getComissaoLiquidadaByPeriod, getDashboardData, getDashboardKPIs, getDashboardKPIsByPeriod, getPerdasByPeriod, getProdutosByPeriod, getProdutosPagina, getResumoSemana, getSubIdPanelData, getSubIdsByPeriod, getUltimaAtualizacaoHoje, mapProdutosPeriodoParaPainel } from "../services/repositories/metricsRepository";
 import { filterProdutos, sortProdutos } from "../domain/attribution/productFilters";
 import { paginate, DEFAULT_PAGE_SIZE } from "../utils/pagination";
 import { fmt, fmtPct, fmtRoas, fmtNum } from "../utils/formatters";
@@ -18,6 +18,7 @@ import PaginationBar from "../components/tables/PaginationBar";
 import Badge from "../components/cards/Badge";
 import { ExternalLink } from "lucide-react";
 import { brtYesterdayYYYYMMDD, formatDateDisplayPT, isDiaRecenteBRT, isValidDateRange } from "../utils/dates";
+import { calcularRangePeriodo, periodoTemFiltro, writePeriodoFiltroStorage } from "../utils/periodoFiltro";
 import { db } from "../services/firebase/client";
 
 function readDashboardSettings() {
@@ -107,57 +108,6 @@ function formatDateLocalYYYYMMDD(date) {
   const mes = String(d.getMonth() + 1).padStart(2, "0");
   const dia = String(d.getDate()).padStart(2, "0");
   return `${ano}-${mes}-${dia}`;
-}
-
-function calcularRangePeriodo(periodo, rangeApplied) {
-  const hojeStr = formatDateBRTYYYYMMDD();
-
-  if (periodo === "hoje") {
-    return { startDate: hojeStr, endDate: hojeStr };
-  }
-  if (periodo === "ontem") {
-    const ontemStr = brtYesterdayYYYYMMDD();
-    return { startDate: ontemStr, endDate: ontemStr };
-  }
-  if (periodo === "custom") {
-    if (!isValidDateRange(rangeApplied?.start, rangeApplied?.end)) {
-      return null;
-    }
-    return { startDate: rangeApplied.start, endDate: rangeApplied.end };
-  }
-  if (periodo === "7d") {
-    const d = new Date((Date.now() / 1000 - 10800) * 1000);
-    d.setUTCDate(d.getUTCDate() - 7);
-    return { startDate: formatDateBRTYYYYMMDD(d), endDate: hojeStr };
-  }
-  if (periodo === "14d") {
-    const d = new Date((Date.now() / 1000 - 10800) * 1000);
-    d.setUTCDate(d.getUTCDate() - 14);
-    return { startDate: formatDateBRTYYYYMMDD(d), endDate: hojeStr };
-  }
-  if (periodo === "30d") {
-    const d = new Date((Date.now() / 1000 - 10800) * 1000);
-    d.setUTCDate(d.getUTCDate() - 30);
-    return { startDate: formatDateBRTYYYYMMDD(d), endDate: hojeStr };
-  }
-  if (periodo === "mes_atual") {
-    const brt = new Date((Date.now() / 1000 - 10800) * 1000);
-    const inicio = new Date(Date.UTC(brt.getUTCFullYear(), brt.getUTCMonth(), 1));
-    return {
-      startDate: formatDateBRTYYYYMMDD(inicio),
-      endDate: hojeStr,
-    };
-  }
-  if (periodo === "mes_anterior") {
-    const brt = new Date((Date.now() / 1000 - 10800) * 1000);
-    const inicio = new Date(Date.UTC(brt.getUTCFullYear(), brt.getUTCMonth() - 1, 1));
-    const fim = new Date(Date.UTC(brt.getUTCFullYear(), brt.getUTCMonth(), 0));
-    return {
-      startDate: formatDateBRTYYYYMMDD(inicio),
-      endDate: formatDateBRTYYYYMMDD(fim),
-    };
-  }
-  return null;
 }
 
 function SyncStatusBar({ ultimaAtualizacao, atualizandoPeriodo, throttleRefreshMs, onRefreshNow, periodoFiltro }) {
@@ -321,6 +271,10 @@ export default function DashboardPage() {
     return () => clearInterval(interval);
   }, []);
 
+  useEffect(() => {
+    writePeriodoFiltroStorage(periodoFiltro, rangeCustomApplied);
+  }, [periodoFiltro, rangeCustomApplied]);
+
   const load = useCallback(async () => {
     const gen = ++loadGenerationRef.current;
     const stale = () => gen !== loadGenerationRef.current;
@@ -353,6 +307,7 @@ export default function DashboardPage() {
       const range = calcularRangePeriodo(periodoFiltro, rangeCustomApplied);
       const dataInicioBusca = (range && range.startDate) ? range.startDate : "2020-01-01";
       const dataFimBusca = (range && range.endDate) ? range.endDate : "2030-12-31";
+      const filtroAtivo = periodoTemFiltro(periodoFiltro);
       let syncMensagem = null;
       let syncErroMsg = null;
       const precisaSync = periodoFiltro !== "all" && range?.startDate && range?.endDate;
@@ -379,8 +334,8 @@ export default function DashboardPage() {
 
       let [kpisFromSumario, produtosPage, subIdsFiltrados, produtosPeriodo, perdas, liquidada] = await Promise.all([
         getDashboardKPIsByPeriod(dataInicioBusca, dataFimBusca).catch(() => null),
-        getProdutosPagina(50).catch(() => ({ produtos: [], lastDoc: null, hasMore: false })),
-        getSubIdsByPeriod(dataInicioBusca, dataFimBusca).catch(() => []),
+        filtroAtivo ? Promise.resolve({ produtos: [], lastDoc: null, hasMore: false }) : getProdutosPagina(50).catch(() => ({ produtos: [], lastDoc: null, hasMore: false })),
+        getSubIdsByPeriod(dataInicioBusca, dataFimBusca, { enrichMeta: filtroAtivo, settings: s }).catch(() => []),
         getProdutosByPeriod(dataInicioBusca, dataFimBusca).catch(() => []),
         getPerdasByPeriod(dataInicioBusca, dataFimBusca).catch(() => ({ countPerdas: 0, totalFatPerdido: 0, totalComissaoPerdida: 0 })),
         getComissaoLiquidadaByPeriod(dataInicioBusca, dataFimBusca).catch(() => null),
@@ -422,6 +377,15 @@ export default function DashboardPage() {
             maxWaitMs: (periodoFiltro === "hoje" || periodoFiltro === "ontem" || isDiaUnicoRecente || forceSync) ? 45000 : 30000,
           }).catch(() => null);
           if (kpisAtualizados) kpisFromSumario = kpisAtualizados;
+
+          const [subIdsNovos, produtosNovos, perdasNovas] = await Promise.all([
+            getSubIdsByPeriod(dataInicioBusca, dataFimBusca, { enrichMeta: filtroAtivo, settings: s }).catch(() => null),
+            getProdutosByPeriod(dataInicioBusca, dataFimBusca).catch(() => null),
+            getPerdasByPeriod(dataInicioBusca, dataFimBusca).catch(() => null),
+          ]);
+          if (subIdsNovos) subIdsFiltrados = subIdsNovos;
+          if (produtosNovos) produtosPeriodo = produtosNovos;
+          if (perdasNovas) perdas = perdasNovas;
         }
 
         if (periodoFiltro === "hoje" || periodoFiltro === "ontem") {
@@ -441,14 +405,21 @@ export default function DashboardPage() {
         return;
       }
 
-      const produtos = produtosPage?.produtos || [];
+      const produtosHistorico = produtosPage?.produtos || [];
+      const produtos = filtroAtivo
+        ? mapProdutosPeriodoParaPainel(produtosPeriodo)
+        : produtosHistorico;
       const ranking = (produtosPeriodo || [])
         .slice(0, 10)
-        .map((p) => ({ nome: p.nome, comissao_concluida: p.comissoes }));
+        .map((p) => ({
+          nome: p.nome,
+          comissao_concluida: p.comissao_estimada ?? p.comissoes ?? 0,
+          comissao_pendente: p.comissoes_pendentes ?? 0,
+        }));
 
       setData({
         kpis: {
-          produtosAtivos: kpisFromSumario.produtosCount || produtos.length,
+          produtosAtivos: filtroAtivo ? (produtosPeriodo?.length || produtos.length) : (kpisFromSumario.produtosCount || produtos.length),
           totalComissao: kpisFromSumario.comissao,
           comissaoReal: kpisFromSumario.comissaoReal ?? kpisFromSumario.comissao,
           comissaoEstimada: kpisFromSumario.comissaoEstimada || kpisFromSumario.comissao || 0,
@@ -490,7 +461,10 @@ export default function DashboardPage() {
         perdas,
       });
 
-      setProdCursor({ lastDoc: produtosPage?.lastDoc || null, hasMore: !!produtosPage?.hasMore });
+      setProdCursor({
+        lastDoc: filtroAtivo ? null : (produtosPage?.lastDoc || null),
+        hasMore: filtroAtivo ? false : !!produtosPage?.hasMore,
+      });
 
       if (
         periodoFiltro === "hoje"
@@ -612,10 +586,14 @@ export default function DashboardPage() {
   }, [load]);
 
   const filteredSorted = useMemo(() => {
-    const base = prodSearchResults ?? data?.produtos ?? [];
+    let base = prodSearchResults ?? data?.produtos ?? [];
+    if (periodoFiltro !== "all" && prodSearch.trim().length >= 1) {
+      const q = prodSearch.trim().toLowerCase();
+      base = (data?.produtos ?? []).filter((p) => (p.nome || "").toLowerCase().includes(q));
+    }
     const filtered = filterProdutos(base, { statusFilter, roiFilter, origemFilter });
     return sortProdutos(filtered, sortField, sortDir);
-  }, [data, prodSearchResults, statusFilter, roiFilter, origemFilter, sortField, sortDir]);
+  }, [data, prodSearchResults, prodSearch, periodoFiltro, statusFilter, roiFilter, origemFilter, sortField, sortDir]);
 
   const paged = useMemo(
     () => paginate(filteredSorted, tablePage, DEFAULT_PAGE_SIZE),
@@ -637,6 +615,11 @@ export default function DashboardPage() {
 
   useEffect(() => {
     const t = String(prodSearch || "").trim();
+    if (periodoFiltro !== "all") {
+      setProdSearchResults(null);
+      setProdSearchLoading(false);
+      return;
+    }
     if (t.length < 2) {
       setProdSearchResults(null);
       setProdSearchLoading(false);
@@ -659,7 +642,7 @@ export default function DashboardPage() {
     }, 400);
 
     return () => window.clearTimeout(handle);
-  }, [prodSearch]);
+  }, [prodSearch, periodoFiltro]);
 
   const handleLoadMore = useCallback(async () => {
     if (loadingMore) return;
@@ -1208,11 +1191,10 @@ export default function DashboardPage() {
 
       
 
-      {/* Aviso quando filtro de período está ativo — painel SubID é histórico */}
-      {periodoFiltro !== "all" && subIds && subIds.length > 0 && subIdDiagnostics?.isReliable && (
-        <div className="mb-3 p-3 bg-blue-50 border border-blue-200 rounded text-sm text-blue-800">
-          ℹ️ O detalhamento por SubID abaixo reflete o <strong>mesmo período</strong> selecionado nos KPIs acima.
-          A tabela de produtos (mais abaixo) ainda usa o histórico completo.
+      {periodoFiltro !== "all" && (
+        <div className="mb-3 p-3 bg-emerald-50 border border-emerald-200 rounded text-sm text-emerald-900">
+          📊 <strong>Período filtrado:</strong> SubIDs, ranking e produtos abaixo usam os mesmos dados da API Shopee (
+          <strong>subid_daily</strong> / <strong>produto_daily</strong>) do período selecionado — alinhados aos KPIs acima.
         </div>
       )}
 
@@ -1605,7 +1587,9 @@ export default function DashboardPage() {
       <OperationalAlerts alerts={operationalAlerts} />
 
       <div className="bg-white rounded-lg border border-gray-200 p-4 mb-4">
-        <h3 className="text-sm font-semibold mb-3">Ranking por comissão concluída</h3>
+        <h3 className="text-sm font-semibold mb-3">
+          {periodoFiltro !== "all" ? "Ranking por comissão estimada (período)" : "Ranking por comissão concluída"}
+        </h3>
         <ChartCanvas
           type="bar"
           height={Math.min(320, 40 + ranking.length * 28)}
@@ -1631,7 +1615,8 @@ export default function DashboardPage() {
           <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
             <h3 className="text-sm font-semibold">Produtos — painel de ação</h3>
             <span className="text-xs text-gray-400">
-              {paged.total} de {(prodSearchResults ?? data.produtos).length} · {kpis.produtosAtivos} no total
+              {paged.total} de {(prodSearchResults ?? data.produtos).length}
+              {periodoFiltro !== "all" ? " · período filtrado (produto_daily)" : ` · ${kpis.produtosAtivos} no total`}
             </span>
           </div>
           <div className="flex flex-wrap items-center gap-2 mb-2">
@@ -1662,8 +1647,8 @@ export default function DashboardPage() {
           />
         </div>
         {periodoFiltro !== "all" && (
-          <div className="mb-3 p-3 bg-orange-50 border border-orange-200 rounded text-sm text-orange-800">
-            ℹ️ A tabela abaixo mostra os top 50 produtos pelo <strong>histórico completo</strong>. Os KPIs acima refletem apenas o período selecionado.
+          <div className="mb-3 p-3 bg-blue-50 border border-blue-200 rounded text-sm text-blue-800">
+            ℹ️ Comissões e vendas refletem o painel Shopee do período. Cliques/ROI exigem vínculo com Meta (histórico de anúncios).
           </div>
         )}
         <div className="overflow-x-auto">
