@@ -44,9 +44,20 @@ function registerResolvedRange(startDate, endDate, snap) {
   resolvedRanges.push({ start: startDate, end: endDate, snap });
 }
 
-export function invalidateMetaAdsDailyCache() {
-  cache.clear();
-  resolvedRanges.length = 0;
+let invalidateTimeout = null;
+
+export function invalidateMetaAdsDailyCache(delayMs = 0) {
+  if (delayMs > 0) {
+    if (invalidateTimeout) clearTimeout(invalidateTimeout);
+    invalidateTimeout = setTimeout(() => {
+      cache.clear();
+      resolvedRanges.length = 0;
+    }, delayMs);
+  } else {
+    if (invalidateTimeout) clearTimeout(invalidateTimeout);
+    cache.clear();
+    resolvedRanges.length = 0;
+  }
 }
 
 /** Uma leitura de meta_ads_daily por período — compartilhada entre KPI e bundle SubID. */

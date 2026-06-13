@@ -70,7 +70,7 @@ async function cleanupImportedDataByTipo(tipo) {
       deleteCollectionDocs(COLLECTIONS.CLIQUES),
       deleteCollectionDocs(COLLECTIONS.CLIQUE_DAILY),
     ]);
-    const prodSnap = await getDocs(collection(db, COLLECTIONS.PRODUTOS));
+    const prodSnap = await getDocs(query(collection(db, COLLECTIONS.PRODUTOS), where("cliques", ">", 0)));
     if (!prodSnap.empty) {
       let batch = writeBatch(db);
       let count = 0;
@@ -88,7 +88,7 @@ async function cleanupImportedDataByTipo(tipo) {
   if (tipo === "meta_ads") {
     const metaRemovidos = await deleteCollectionDocs(COLLECTIONS.META_ADS);
     const [prodSnap, pinSnap] = await Promise.all([
-      getDocs(collection(db, COLLECTIONS.PRODUTOS)),
+      getDocs(query(collection(db, COLLECTIONS.PRODUTOS), where("investimento", ">", 0))),
       getDocs(collection(db, COLLECTIONS.PINTEREST)),
     ]);
     const pinIndex = {};
@@ -113,7 +113,7 @@ async function cleanupImportedDataByTipo(tipo) {
   if (tipo === "pinterest") {
     const pinterestRemovidos = await deleteCollectionDocs(COLLECTIONS.PINTEREST);
     const [prodSnap, metaSnap] = await Promise.all([
-      getDocs(collection(db, COLLECTIONS.PRODUTOS)),
+      getDocs(query(collection(db, COLLECTIONS.PRODUTOS), where("investimento", ">", 0))),
       getDocs(collection(db, COLLECTIONS.META_ADS)),
     ]);
     const metaIndex = {};

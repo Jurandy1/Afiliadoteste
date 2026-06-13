@@ -46,7 +46,7 @@ export function prepararFiltroParaDadosReais() {
 export function invalidateAllPeriodCaches() {
   invalidatePeriodSessionCache();
   invalidateDataVersionsCache();
-  invalidateMetaAdsDailyCache();
+  invalidateMetaAdsDailyCache(1500);
   invalidateAlertasBellCache();
   invalidarPeriodoPainelCache();
   invalidarModoAllCache();

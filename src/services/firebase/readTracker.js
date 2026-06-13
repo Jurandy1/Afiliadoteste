@@ -36,7 +36,37 @@ const session = {
   byCollection: {},
   bySource: {},
   byOp: {},
+  byPeriod: {}, // Novo agrupamento por filtro de período
 };
+
+// Mapeamento amigável dos presets de período
+const PERIOD_LABELS = {
+  all: "Todo período",
+  ontem: "Ontem",
+  "7d": "7 dias",
+  "14d": "14 dias",
+  "30d": "30 dias",
+  mes_atual: "Este mês",
+  mes_anterior: "Mês anterior",
+  custom: "Personalizado",
+};
+
+function getActivePeriodFilter() {
+  if (typeof window === "undefined") return "mes_atual";
+  try {
+    const raw = window.localStorage.getItem("afilia:periodoFiltro");
+    return raw || "mes_atual";
+  } catch {
+    return "mes_atual";
+  }
+}
+
+// Ouvinte para atualizar o período ativo dinamicamente em tempo de execução
+if (typeof window !== "undefined") {
+  window.addEventListener("afilia:periodo-change", () => {
+    // Forçar atualização do período ou snapshot se necessário
+  });
+}
 
 function touchCollection(col) {
   if (!session.byCollection[col]) session.byCollection[col] = emptyBucket();
@@ -51,6 +81,12 @@ function touchSource(src) {
 function touchOp(op) {
   if (!session.byOp[op]) session.byOp[op] = emptyBucket();
   return session.byOp[op];
+}
+
+function touchPeriod(period) {
+  const label = PERIOD_LABELS[period] || period || "desconhecido";
+  if (!session.byPeriod[label]) session.byPeriod[label] = emptyBucket();
+  return session.byPeriod[label];
 }
 
 function shouldSkipCollection(collection) {
@@ -70,6 +106,7 @@ function persistSessionDebounced() {
         byCollection: session.byCollection,
         bySource: session.bySource,
         byOp: session.byOp,
+        byPeriod: session.byPeriod,
       }));
     } catch {
       /* ignore */
@@ -92,6 +129,7 @@ function loadSessionFromStorage() {
     session.byCollection = parsed.byCollection || {};
     session.bySource = parsed.bySource || {};
     session.byOp = parsed.byOp || {};
+    session.byPeriod = parsed.byPeriod || {};
   } catch {
     /* ignore */
   }
@@ -209,11 +247,13 @@ export function trackFirestoreRead({ op, collection, docs, source }) {
 
   const src = source || captureSource();
   const operation = op || "read";
+  const activePeriod = getActivePeriodFilter();
 
   session.totalReads += count;
   touchCollection(col).reads += count;
   touchSource(src).reads += count;
   touchOp(operation).reads += count;
+  touchPeriod(activePeriod).reads += count;
 
   pushEvent({
     ts: Date.now(),
@@ -222,6 +262,7 @@ export function trackFirestoreRead({ op, collection, docs, source }) {
     collection: col,
     docs: count,
     source: src,
+    period: activePeriod,
   });
 
   queueGlobalFlush({
@@ -244,11 +285,13 @@ export function trackFirestoreWrite({ op, collection, docs, source }) {
   const count = Math.max(1, Number(docs) || 1);
   const src = source || captureSource();
   const operation = op || "write";
+  const activePeriod = getActivePeriodFilter();
 
   session.totalWrites += count;
   touchCollection(col).writes += count;
   touchSource(src).writes += count;
   touchOp(operation).writes += count;
+  touchPeriod(activePeriod).writes += count;
 
   pushEvent({
     ts: Date.now(),
@@ -257,6 +300,7 @@ export function trackFirestoreWrite({ op, collection, docs, source }) {
     collection: col,
     docs: count,
     source: src,
+    period: activePeriod,
   });
 
   queueGlobalFlush({
@@ -324,6 +368,7 @@ export function getFirestoreTrackerSnapshot(globalToday = null) {
     byCollection: sortCollectionEntries(session.byCollection),
     bySource: sortCollectionEntries(session.bySource),
     byOp: sortOpEntries(session.byOp),
+    byPeriod: sortCollectionEntries(session.byPeriod), // Exposição ordenada do novo agrupamento
     recentEvents: session.events.slice(0, 40),
     // compat legado
     totalReadsLegacy: session.totalReads,

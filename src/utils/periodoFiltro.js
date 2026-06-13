@@ -99,6 +99,20 @@ export function validarRangeCustom(start, end) {
   }
   let endNorm = end;
   if (end > max) endNorm = max;
+
+  // Enforce 90-day limit to prevent massive reads
+  const msPerDay = 24 * 60 * 60 * 1000;
+  const dStart = new Date(start + "T12:00:00Z");
+  const dEnd = new Date(endNorm + "T12:00:00Z");
+  const diffDays = Math.round((dEnd - dStart) / msPerDay);
+  
+  if (diffDays > 90) {
+    return { 
+      ok: false, 
+      erro: "Para intervalos maiores que 90 dias, utilize o filtro 'Todo Período' (que usa dados agregados)." 
+    };
+  }
+
   return { ok: true, start, end: endNorm };
 }
 

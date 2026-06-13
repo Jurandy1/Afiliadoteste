@@ -42,6 +42,12 @@ import {
   PerformanceHeroFinanceiro,
   PerformanceHeroVolume,
 } from "../../../components/dashboard/PerformanceHeroBanners";
+import {
+  SkeletonFinanceiro,
+  SkeletonVolume,
+  SkeletonPedidosCards,
+  SkeletonChart,
+} from "../../../components/dashboard/DashboardSkeletons";
 import PeriodoFilterBar from "../../../components/filters/PeriodoFilterBar";
 import SubIdDesktopFilter from "../components/SubIdDesktopFilter";
 import SubIdDailyBreakdownTable from "../components/SubIdDailyBreakdownTable";
@@ -873,7 +879,19 @@ export default function DashboardPage() {
   }, [periodoToolbar, setToolbar]);
 
   if (loading && !data) {
-    return <LoadingSpinner />;
+    return (
+      <div className="dashboard-page animate-pulse">
+        <div className="h-6 w-1/3 bg-slate-200 rounded mb-4" />
+        <section className="space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <SkeletonFinanceiro />
+            <SkeletonVolume />
+          </div>
+          <SkeletonPedidosCards />
+          <SkeletonChart />
+        </section>
+      </div>
+    );
   }
 
   if (loadError) {

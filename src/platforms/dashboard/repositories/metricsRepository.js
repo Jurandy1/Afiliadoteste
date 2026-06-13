@@ -36,7 +36,7 @@ import {
 } from "../../../domain/metrics/subIdIntegrity.js";
 import { calcMetrics } from "../../../domain/metrics/productMetrics";
 import { getSubIdVendas } from "../../shopee/repositories/productsRepository";
-import { getMetaAds } from "../../meta/repositories/metaRepository";
+import { getMetaAds, clearMetaAdsCache } from "../../meta/repositories/metaRepository";
 import { getPinterest } from "../../pinterest/repositories/pinterestRepository";
 import { getLatestImportIds } from "../../imports/repositories/importacoesLogRepository";
 import { calcularRangeModoAll } from "../../../utils/periodoFiltro";
@@ -173,27 +173,13 @@ export async function getProdutosPagina(pageSize = 50, lastDoc = null) {
 export async function getDashboardKPIsByPeriod(startDate, endDate, settings = {}) {
   const { impostoMeta = 0, impostoNf = 0 } = settings || {};
   await loadShopeeOficialPeriodRef();
-  const dailyRef = collection(db, "shopee_daily");
-  let snap;
-
-  if (startDate === endDate) {
-    const ref = doc(db, "shopee_daily", startDate);
-    const snapDoc = await getDoc(ref);
-    const docValido = snapDoc.exists() && !isDailyMetricsVazio(snapDoc.data());
-    snap = {
-      size: docValido ? 1 : 0,
-      forEach: (cb) => {
-        if (docValido) cb(snapDoc);
-      },
-    };
-  } else {
-    const q = query(
-      dailyRef,
-      where(documentId(), ">=", startDate),
-      where(documentId(), "<=", endDate),
-    );
-    snap = await getDocs(q);
-  }
+  const docs = await fetchShopeeDailyDocsForRange(startDate, endDate);
+  const snap = {
+    size: docs.length,
+    forEach: (cb) => {
+      docs.forEach(cb);
+    },
+  };
 
   const tot = {
     comissao_total: 0,
@@ -670,31 +656,45 @@ export async function getDatasDesatualizadas(startDate, endDate) {
   const dates = listDatesBetween(startDate, endDate).filter((d) => d <= hojeStr);
   const stale = [];
 
-  await Promise.all(dates.map(async (dateStr) => {
-    try {
-      const snap = await getDoc(doc(db, "shopee_daily", dateStr));
-      if (!snap.exists()) {
+  if (dates.length === 0) return stale;
+
+  try {
+    const q = query(
+      collection(db, "shopee_daily"),
+      where(documentId(), ">=", dates[0]),
+      where(documentId(), "<=", dates[dates.length - 1])
+    );
+    const snap = await getDocs(q);
+    const map = {};
+    snap.forEach((d) => {
+      map[d.id] = d.data() || {};
+    });
+
+    for (const dateStr of dates) {
+      const data = map[dateStr];
+      if (!data) {
         stale.push(dateStr);
-        return;
+        continue;
       }
-      const data = snap.data() || {};
       if (isDailyMetricsVazio(data)) {
         stale.push(dateStr);
-        return;
+        continue;
       }
       const updatedAt = data.updatedAt?.toDate?.();
       if (!updatedAt) {
         stale.push(dateStr);
-        return;
+        continue;
       }
       const ageMs = Date.now() - updatedAt.getTime();
       if (ageMs > getStaleThresholdMs(dateStr)) {
         stale.push(dateStr);
       }
-    } catch {
-      stale.push(dateStr);
     }
-  }));
+  } catch (err) {
+    console.warn("[getDatasDesatualizadas] erro na consulta em lote:", err);
+    // Fallback: se a consulta em lote falhar, assume tudo como desatualizado.
+    return dates.sort();
+  }
 
   return stale.sort();
 }
@@ -900,22 +900,20 @@ export async function garantirDadosAtualizados(startDate, endDate, { forceAll = 
 export async function getDashboardPanelModoAll(settings = {}) {
   const { startDate, endDate } = calcularRangeModoAll();
 
-  const [kpisPeriod, produtosPage, perdas] = await Promise.all([
-    getDashboardKPIsByPeriod(startDate, endDate, settings),
+  const [painel, produtosPage] = await Promise.all([
+    getDashboardPainelPorPeriodo(startDate, endDate, settings, {
+      includeProdutos: false,
+      forceGranular: false,
+      includeDaily: true,
+    }),
     getProdutosPagina(50),
-    getPerdasKpiByPeriod(startDate, endDate).catch(() => ({
-      countPerdas: 0,
-      totalFatPerdido: 0,
-      totalComissaoPerdida: 0,
-    })),
   ]);
-  const subIds = await getSubIdsByPeriod(startDate, endDate, {
-    enrichMeta: true,
-    settings,
-    kpiTarget: kpisPeriod,
-  });
 
+  const subIds = painel.subIds || [];
+  const kpisPeriod = painel.kpisFromSumario;
+  const perdas = painel.perdas || { countPerdas: 0, totalFatPerdido: 0, totalComissaoPerdida: 0 };
   const produtos = produtosPage?.produtos || [];
+
   const statusCount = { Escalando: 0, Validando: 0, Pausado: 0 };
   produtos.forEach((p) => {
     statusCount[p.status] = (statusCount[p.status] || 0) + 1;
@@ -950,7 +948,7 @@ export async function getDashboardPanelModoAll(settings = {}) {
     kpis: {
       produtosAtivos: hasSubIdSalesData
         ? subIds.filter((r) => (r.comissoes || 0) > 0 || (r.total_vendas || 0) > 0).length
-        : produtos.length,
+        : (kpisPeriod?.produtosCount || produtos.length),
       totalComissao: kpisPeriod?.comissao || 0,
       comissaoReal: kpisPeriod?.comissaoReal ?? kpisPeriod?.comissao ?? 0,
       comissaoEstimada: kpisPeriod?.comissaoEstimada || kpisPeriod?.comissao || 0,
@@ -989,6 +987,9 @@ export async function getDashboardPanelModoAll(settings = {}) {
       lastUpdated: kpisPeriod?.lastUpdated || null,
       shopeeDataMode: kpisPeriod?.shopeeDataMode || "api_fiel",
       shopeePanelAudit: kpisPeriod?.shopeePanelAudit || null,
+      splitPedidoNivel: kpisPeriod?.splitPedidoNivel,
+      splitCriterio: kpisPeriod?.splitCriterio,
+      splitIndisponivel: Boolean(kpisPeriod?.splitIndisponivel),
     },
     statusCount,
     ranking,
@@ -997,12 +998,12 @@ export async function getDashboardPanelModoAll(settings = {}) {
       lastDoc: produtosPage?.lastDoc || null,
       hasMore: !!produtosPage?.hasMore,
     },
-    metaGastoResumo: calcMetaGastoResumo(kpisPeriod, subIds),
+    metaGastoResumo: painel.metaGastoResumo || calcMetaGastoResumo(kpisPeriod, subIds),
     subIds,
     subIdDiagnostics: {
       totalRows: subIds.length,
       isReliable: true,
-      source: "subid_daily",
+      source: painel._source || "monthly_bucket",
       hasSubIdSalesData,
       rowsWithSales: subIds.filter((r) => (r.comissoes || 0) > 0 || (r.total_vendas || 0) > 0).length,
     },
@@ -1167,37 +1168,49 @@ export async function getShopeeDashboardDataVersion() {
   }
 }
 
+const alvoAlinhamentoCache = new Map();
+const shopeeDailyQueryCache = new Map();
+
 export function clearDashboardQueryCaches() {
-  invalidateMetaAdsDailyCache();
+  invalidateMetaAdsDailyCache(1500); // 1.5s debounce to prevent churn
   perdasKpiCache.clear();
   alvoAlinhamentoCache.clear();
+  shopeeDailyQueryCache.clear();
+  clearMetaAdsCache();
   invalidateDataVersionsCache();
   invalidateProdutoMensalCache();
 }
 
-const alvoAlinhamentoCache = new Map();
+export async function fetchShopeeDailyDocsForRange(startDate, endDate) {
+  const cacheKey = `${startDate}|${endDate}`;
+  if (shopeeDailyQueryCache.has(cacheKey)) {
+    return shopeeDailyQueryCache.get(cacheKey);
+  }
 
-/** Totais Shopee do período (1 doc/dia) — fonte de verdade do Dashboard. */
-async function lerTotaisShopeeDailyPeriodo(startDate, endDate) {
   const dailyRef = collection(db, "shopee_daily");
-  let snap;
-
+  let docs = [];
   if (startDate === endDate) {
     const snapDoc = await getDoc(doc(db, "shopee_daily", startDate));
     const docValido = snapDoc.exists() && !isDailyMetricsVazio(snapDoc.data());
-    snap = {
-      forEach: (cb) => {
-        if (docValido) cb(snapDoc);
-      },
-    };
+    if (docValido) {
+      docs = [snapDoc];
+    }
   } else {
-    snap = await getDocs(query(
+    const q = query(
       dailyRef,
       where(documentId(), ">=", startDate),
       where(documentId(), "<=", endDate),
-    ));
+    );
+    const snap = await getDocs(q);
+    docs = snap.docs;
   }
+  shopeeDailyQueryCache.set(cacheKey, docs);
+  return docs;
+}
 
+/** Totais Shopee do período (1 doc/dia) — fonte de verdade do Dashboard. */
+async function lerTotaisShopeeDailyPeriodo(startDate, endDate) {
+  const docs = await fetchShopeeDailyDocsForRange(startDate, endDate);
   const tot = {
     comissao_estimada: 0,
     fat_bruto: 0,
@@ -1205,7 +1218,7 @@ async function lerTotaisShopeeDailyPeriodo(startDate, endDate) {
     pedidos: 0,
   };
   let dias = 0;
-  snap.forEach((d) => {
+  docs.forEach((d) => {
     const x = d.data() || {};
     if (isDailyMetricsVazio(x)) return;
     dias += 1;
@@ -1221,19 +1234,9 @@ async function lerTotaisShopeeDailyPeriodo(startDate, endDate) {
 /** aggregation_mode gravado no sync (ex.: promosapp-node-once). */
 async function lerAggModeShopeeDailyPeriodo(startStr, endStr) {
   if (!startStr || !endStr) return "";
-  if (startStr === endStr) {
-    const snap = await getDoc(doc(db, "shopee_daily", startStr));
-    if (!snap.exists()) return "";
-    return String(snap.data()?.aggregation_mode || "");
-  }
-  const q = query(
-    collection(db, "shopee_daily"),
-    where(documentId(), ">=", startStr),
-    where(documentId(), "<=", endStr),
-  );
-  const snap = await getDocs(q);
+  const docs = await fetchShopeeDailyDocsForRange(startStr, endStr);
   let mode = "";
-  snap.forEach((d) => {
+  docs.forEach((d) => {
     const m = String(d.data()?.aggregation_mode || "");
     if (!m) return;
     if (!mode) mode = m;
@@ -1244,17 +1247,12 @@ async function lerAggModeShopeeDailyPeriodo(startStr, endStr) {
 
 /** Soma split concluída/pendente de shopee_daily (triangulação PATCH I). */
 async function sumSplitShopeeDailyPeriodo(startStr, endStr) {
-  const q = query(
-    collection(db, "shopee_daily"),
-    where(documentId(), ">=", startStr),
-    where(documentId(), "<=", endStr),
-  );
-  const snap = await getDocs(q);
+  const docs = await fetchShopeeDailyDocsForRange(startStr, endStr);
   let concluida = 0;
   let pendente = 0;
   let estimada = 0;
   let dias = 0;
-  snap.forEach((d) => {
+  docs.forEach((d) => {
     const x = d.data() || {};
     if (isDailyMetricsVazio(x)) return;
     dias += 1;

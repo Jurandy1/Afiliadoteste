@@ -6,11 +6,23 @@ import { collection, getDocs, limit, orderBy, query, where } from "firebase/fire
 import { db } from "../../../services/firebase/client";
 import { COLLECTIONS } from "../../../services/firebase/firestore";
 
+const metaAdsCache = new Map();
+
 export async function getMetaAds(importacaoId = null) {
+  const cacheKey = importacaoId || "all";
+  if (metaAdsCache.has(cacheKey)) {
+    return metaAdsCache.get(cacheKey);
+  }
   const base = collection(db, COLLECTIONS.META_ADS);
   const q = importacaoId ? query(base, where("importacaoId", "==", importacaoId)) : base;
   const snap = await getDocs(q);
-  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  const result = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  metaAdsCache.set(cacheKey, result);
+  return result;
+}
+
+export function clearMetaAdsCache() {
+  metaAdsCache.clear();
 }
 
 export async function getMetaDemographics() {

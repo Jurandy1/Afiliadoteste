@@ -7,6 +7,17 @@ import {
 } from "../../services/firebase/readTracker";
 import { subscribeGlobalUsage } from "../../services/firebase/firestoreUsageSync";
 
+const PERIOD_LABELS = {
+  all: "Todo período",
+  ontem: "Ontem",
+  "7d": "7 dias",
+  "14d": "14 dias",
+  "30d": "30 dias",
+  mes_atual: "Este mês",
+  mes_anterior: "Mês anterior",
+  custom: "Personalizado",
+};
+
 function BarRow({ label, reads = 0, writes = 0, total, tone = "slate" }) {
   const ops = reads + writes;
   const pct = total > 0 ? Math.min(100, (ops / total) * 100) : 0;
@@ -82,6 +93,9 @@ export default function FirestoreReadDiagnostics() {
   const activeOps = view === "global"
     ? (global?.ops || [])
     : (stats?.byOp || []);
+  const activePeriods = view === "global"
+    ? (global?.periods || [])
+    : (stats?.byPeriod || []);
   const activeTotal = view === "global"
     ? globalReads + globalWrites
     : sessionReads + sessionWrites;
@@ -219,21 +233,41 @@ export default function FirestoreReadDiagnostics() {
             </div>
           </div>
 
-          {activeOps.length > 0 && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {activeOps.length > 0 && (
+              <div className="bg-white border border-slate-200 rounded-lg p-3 space-y-2">
+                <div className="text-xs font-semibold text-slate-700">Por operação</div>
+                {activeOps.slice(0, 8).map((row) => (
+                  <BarRow
+                    key={row.key}
+                    label={row.key}
+                    reads={row.reads}
+                    writes={row.writes}
+                    total={activeTotal}
+                    tone="violet"
+                  />
+                ))}
+              </div>
+            )}
+
             <div className="bg-white border border-slate-200 rounded-lg p-3 space-y-2">
-              <div className="text-xs font-semibold text-slate-700">Por operação</div>
-              {activeOps.slice(0, 8).map((row) => (
-                <BarRow
-                  key={row.key}
-                  label={row.key}
-                  reads={row.reads}
-                  writes={row.writes}
-                  total={activeTotal}
-                  tone="violet"
-                />
-              ))}
+              <div className="text-xs font-semibold text-slate-700">Por filtro de período</div>
+              {activePeriods.length === 0 ? (
+                <p className="text-[11px] text-slate-400">Nenhum período registrado ainda.</p>
+              ) : (
+                activePeriods.map((row) => (
+                  <BarRow
+                    key={row.key}
+                    label={row.key}
+                    reads={row.reads}
+                    writes={row.writes}
+                    total={activeTotal}
+                    tone="amber"
+                  />
+                ))
+              )}
             </div>
-          )}
+          </div>
 
           {view === "session" && stats.recentEvents.length > 0 && (
             <details className="bg-white border border-slate-200 rounded-lg">
@@ -248,6 +282,7 @@ export default function FirestoreReadDiagnostics() {
                       <th className="text-left px-2 py-1">Op</th>
                       <th className="text-left px-2 py-1">Coleção</th>
                       <th className="text-right px-2 py-1">Qtd</th>
+                      <th className="text-left px-2 py-1">Período</th>
                       <th className="text-left px-2 py-1">Origem</th>
                     </tr>
                   </thead>
@@ -258,6 +293,7 @@ export default function FirestoreReadDiagnostics() {
                         <td className="px-2 py-1 text-slate-500">{ev.op}</td>
                         <td className="px-2 py-1 font-medium">{ev.collection}</td>
                         <td className="px-2 py-1 text-right tabular-nums">{ev.docs}</td>
+                        <td className="px-2 py-1 font-semibold text-amber-700">{PERIOD_LABELS[ev.period] || ev.period || "—"}</td>
                         <td className="px-2 py-1 text-slate-600 truncate max-w-[160px]" title={ev.source}>{ev.source}</td>
                       </tr>
                     ))}

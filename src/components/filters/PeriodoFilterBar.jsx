@@ -215,7 +215,28 @@ export default function PeriodoFilterBar({
         {painelCustom}
 
         {rangeErro && (
-          <div className="p-2.5 bg-red-50 border border-red-200 rounded-lg text-xs text-red-800">{rangeErro}</div>
+          <div className="p-3 bg-amber-50/90 border border-amber-200/50 rounded-xl text-xs text-amber-900 flex flex-col sm:flex-row sm:items-center justify-between gap-2 shadow-sm backdrop-blur-sm transition-all duration-300">
+            <div className="flex items-center gap-2">
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse shrink-0" />
+              <span>{rangeErro}</span>
+            </div>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => onPreset("mes_atual")}
+                className="px-2.5 py-1 rounded bg-white hover:bg-slate-50 border border-slate-200 text-[10px] font-semibold text-slate-700 transition-colors"
+              >
+                Este mês
+              </button>
+              <button
+                type="button"
+                onClick={() => onPreset("all")}
+                className="px-2.5 py-1 rounded bg-indigo-600 hover:bg-indigo-700 text-[10px] font-semibold text-white transition-colors"
+              >
+                Todo período
+              </button>
+            </div>
+          </div>
         )}
       </div>
     );
@@ -243,7 +264,28 @@ export default function PeriodoFilterBar({
       {painelCustom && <div className="mt-3">{painelCustom}</div>}
 
       {rangeErro && (
-        <div className="mt-2 p-2.5 bg-red-50 border border-red-200 rounded-lg text-xs text-red-800">{rangeErro}</div>
+        <div className="mt-3 p-3 bg-amber-50/90 border border-amber-200/50 rounded-xl text-xs text-amber-900 flex flex-col sm:flex-row sm:items-center justify-between gap-2 shadow-sm backdrop-blur-sm transition-all duration-300">
+          <div className="flex items-center gap-2">
+            <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse shrink-0" />
+            <span>{rangeErro}</span>
+          </div>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => onPreset("mes_atual")}
+              className="px-2.5 py-1 rounded bg-white hover:bg-slate-50 border border-slate-200 text-[10px] font-semibold text-slate-700 transition-colors"
+            >
+              Este mês
+            </button>
+            <button
+              type="button"
+              onClick={() => onPreset("all")}
+              className="px-2.5 py-1 rounded bg-indigo-600 hover:bg-indigo-700 text-[10px] font-semibold text-white transition-colors"
+            >
+              Todo período
+            </button>
+          </div>
+        </div>
       )}
     </div>
   );
