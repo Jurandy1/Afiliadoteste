@@ -63,57 +63,21 @@ function buildComissaoLineChart(rows) {
   const series = rows.map(comissaoDoDia);
   if (!series.some((s) => s.total > 0)) return null;
 
-  const temSplit = series.some((s) => s.concluida > 0 || s.pendente > 0);
   const pointRadius = rows.length > 31 ? 0 : 3;
 
-  if (!temSplit) {
-    return {
-      labels,
-      datasets: [{
-        label: "Comissão",
-        data: series.map((s) => s.total),
-        borderColor: "#22C55E",
-        backgroundColor: "rgba(34, 197, 94, 0.12)",
-        fill: true,
-        tension: 0.35,
-        pointRadius,
-        borderWidth: 2.5,
-      }],
-    };
-  }
-
-  const concluido = series.map((s) => (
-    s.concluida > 0 ? s.concluida : Math.max(0, s.total - s.pendente)
-  ));
-  const pendente = series.map((s) => s.pendente);
-  const datasets = [];
-
-  if (concluido.some((v) => v > 0)) {
-    datasets.push({
-      label: "Liquidado",
-      data: concluido,
-      borderColor: "#22C55E",
-      backgroundColor: "rgba(34, 197, 94, 0.12)",
+  return {
+    labels,
+    datasets: [{
+      label: "Projetado",
+      data: series.map((s) => s.total),
+      borderColor: "#8B5CF6",
+      backgroundColor: "rgba(139, 92, 246, 0.12)",
       fill: true,
       tension: 0.35,
       pointRadius,
       borderWidth: 2.5,
-    });
-  }
-  if (pendente.some((v) => v > 0)) {
-    datasets.push({
-      label: "Pendente",
-      data: pendente,
-      borderColor: "#FBBF24",
-      backgroundColor: "transparent",
-      borderDash: [6, 4],
-      tension: 0.35,
-      pointRadius,
-      borderWidth: 2,
-    });
-  }
-
-  return datasets.length ? { labels, datasets } : null;
+    }],
+  };
 }
 
 export default function DashboardChartsPanel({
@@ -146,8 +110,9 @@ export default function DashboardChartsPanel({
     if (status.pedidosNaoPagos > 0) {
       slices.push({ label: "Não liquidados", value: status.pedidosNaoPagos, color: "#71717A" });
     }
-    if (status.pedidosComPerda > 0) {
-      slices.push({ label: "Com perda (log)", value: status.pedidosComPerda, color: "#64748B" });
+    if (status.pedidosComPerda > 0
+      && status.pedidosComPerda !== status.cancelados) {
+      slices.push({ label: "Perdas (log)", value: status.pedidosComPerda, color: "#64748B" });
     }
     const filtered = slices.filter((s) => s.value > 0);
     if (!filtered.length) return null;
@@ -246,7 +211,7 @@ export default function DashboardChartsPanel({
                 <Info size={14} />
               </span>
             </div>
-            <div className="text-[11px] text-slate-500">{periodoLabel} · liquidado vs pendente (nível conversão)</div>
+            <div className="text-[11px] text-slate-500">{periodoLabel} · comissão projetada por dia</div>
           </div>
         </div>
         {lineChart ? (

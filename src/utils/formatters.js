@@ -20,12 +20,51 @@ export function comissaoPendenteKpiValor(kpis = {}) {
   return Number(kpis.comissaoPendente ?? 0);
 }
 
-/** Abaixo do valor: só a quantidade de pedidos pendentes. */
+/** Abaixo do valor: quantidade de conversões pendentes (critério PromosApp). */
 export function comissaoKpiTrendPedidosPendentes(kpis = {}) {
   if (kpis.splitIndisponivel) return null;
   const qtd = Number(kpis.pedidosPendentes || 0);
   if (qtd <= 0) return null;
-  return `${fmtNum(qtd)} pedidos pendentes`;
+  return `${fmtNum(qtd)} conversões pendentes`;
+}
+
+/** Progresso da meta mensal de faturamento — evita cap enganoso em 999%. */
+export function formatMetaMensalProgress(fatBruto, metaMensal) {
+  const meta = Number(metaMensal) || 0;
+  const fat = Number(fatBruto) || 0;
+  if (meta <= 0) {
+    return { headline: "—", barPct: 0, fat, meta, ratio: 0 };
+  }
+  const ratio = fat / meta;
+  const pct = ratio * 100;
+  const barPct = Math.min(100, pct);
+  const headline = ratio >= 10
+    ? `${ratio.toLocaleString("pt-BR", { maximumFractionDigits: 1 })}× da meta`
+    : `${pct.toLocaleString("pt-BR", { maximumFractionDigits: 0 })}% da meta`;
+  const detailPct = `${pct.toLocaleString("pt-BR", { maximumFractionDigits: 0 })}% da meta`;
+  return { headline, barPct, fat, meta, ratio, detailPct };
+}
+
+/** Soma diretas/indiretas a partir das linhas SubID (bate com TOTAL da tabela). */
+export function somarVendasDiretasIndiretasSubIds(subIds = []) {
+  let vendasDiretas = 0;
+  let vendasIndiretas = 0;
+  for (const r of subIds) {
+    vendasDiretas += Number(r.vendas_diretas || 0);
+    vendasIndiretas += Number(r.vendas_indiretas || 0);
+  }
+  return { vendasDiretas, vendasIndiretas };
+}
+
+export function contarSubIdsComVenda(subIds = []) {
+  return (subIds || []).filter(
+    (r) => (Number(r.comissoes || r.comissoes_estimadas || 0) > 0)
+      || (Number(r.total_vendas || 0) > 0),
+  ).length;
+}
+
+export function contarSubIdsNoPeriodo(subIds = []) {
+  return (subIds || []).length;
 }
 
 /** Linhas de legenda — comissão KPI (nível conversão) e contagens claras. */

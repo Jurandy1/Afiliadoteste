@@ -68,60 +68,93 @@ function StatusCard({ tone, icon: Icon, title, value, subtitle, tooltip }) {
   );
 }
 
-/** Bloco 2 — Conversão: critério PromosApp (nível conversão) + pedidos validados. */
 export default function StatusPedidosCards({ kpis, perdas }) {
   const status = resolverStatusPedidos(kpis, perdas);
   const criterioTooltip = splitCriterioPromosAppTooltip(kpis);
+  const perdasIgualCancelados = status.pedidosComPerda > 0
+    && status.pedidosComPerda === status.cancelados;
+  const exibirCardPerdas = status.pedidosComPerda > 0 && !perdasIgualCancelados;
+
+  const cards = [
+    {
+      key: "concl",
+      tone: "green",
+      icon: CheckCircle2,
+      title: "Conversões concluídas",
+      value: status.concluidos,
+      subtitle: "100% dos pedidos válidos COMPLETED",
+      tooltip: criterioTooltip,
+    },
+    {
+      key: "pend",
+      tone: "yellow",
+      icon: Clock,
+      title: "Conversões pendentes",
+      value: status.pendentes,
+      subtitle: "Aguardando liquidação na Shopee",
+    },
+    {
+      key: "valid",
+      tone: "blue",
+      icon: Package,
+      title: "Pedidos validados",
+      value: status.pedidosValidados,
+      subtitle: "Total rastreado no período (API)",
+    },
+    {
+      key: "canc",
+      tone: "red",
+      icon: XCircle,
+      title: "Pedidos cancelados",
+      value: status.cancelados,
+      subtitle: perdasIgualCancelados
+        ? "Status CANCELLED na API (inclui log_perdas)"
+        : "Cancelados ou devolvidos na API",
+    },
+    {
+      key: "unpaid",
+      tone: "slate",
+      icon: Hourglass,
+      title: "Não liquidados",
+      value: status.pedidosNaoPagos,
+      subtitle: "UNPAID — aguardando pagamento",
+    },
+  ];
+
+  if (exibirCardPerdas) {
+    cards.push({
+      key: "perda",
+      tone: "gray",
+      icon: Hourglass,
+      title: "Perdas (log)",
+      value: status.pedidosComPerda,
+      subtitle: "Registro log_perdas — pode sobrepor cancelados",
+    });
+  }
+
+  const gridCols = cards.length >= 6
+    ? "xl:grid-cols-6"
+    : cards.length === 5
+      ? "xl:grid-cols-5"
+      : "xl:grid-cols-4";
 
   return (
     <div>
       <div className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-3">
         Conversão — status PromosApp
       </div>
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-6 gap-4">
-        <StatusCard
-          tone="green"
-          icon={CheckCircle2}
-          title="Conversões concluídas"
-          value={status.concluidos}
-          subtitle="100% dos pedidos válidos COMPLETED"
-          tooltip={criterioTooltip}
-        />
-        <StatusCard
-          tone="yellow"
-          icon={Clock}
-          title="Conversões pendentes"
-          value={status.pendentes}
-          subtitle="Aguardando liquidação na Shopee"
-        />
-        <StatusCard
-          tone="blue"
-          icon={Package}
-          title="Pedidos validados"
-          value={status.pedidosValidados}
-          subtitle="Total rastreado no período (API)"
-        />
-        <StatusCard
-          tone="red"
-          icon={XCircle}
-          title="Pedidos cancelados"
-          value={status.cancelados}
-          subtitle="Cancelados ou devolvidos"
-        />
-        <StatusCard
-          tone="slate"
-          icon={Hourglass}
-          title="Não liquidados"
-          value={status.pedidosNaoPagos}
-          subtitle="UNPAID — aguardando pagamento"
-        />
-        <StatusCard
-          tone="gray"
-          icon={Hourglass}
-          title="Pedidos com perda"
-          value={status.pedidosComPerda}
-          subtitle="Cancelados (log_perdas)"
-        />
+      <div className={`grid grid-cols-1 sm:grid-cols-2 ${gridCols} gap-4`}>
+        {cards.map((c) => (
+          <StatusCard
+            key={c.key}
+            tone={c.tone}
+            icon={c.icon}
+            title={c.title}
+            value={c.value}
+            subtitle={c.subtitle}
+            tooltip={c.tooltip}
+          />
+        ))}
       </div>
     </div>
   );

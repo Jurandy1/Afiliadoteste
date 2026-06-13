@@ -5,6 +5,7 @@ import SubIdMobileCards from "./SubIdMobileCards";
 export default function SubIdMobilePanel({
   loadingSubIds,
   rowCount,
+  rowCountLabel,
   subSearch,
   setSubSearch,
   subCols,
@@ -31,7 +32,7 @@ export default function SubIdMobilePanel({
             Detalhamento por SubID
             {loadingSubIds && <span className="ml-2 text-xs font-normal text-gray-400">carregando…</span>}
           </h3>
-          <span className="text-xs text-gray-400">{rowCount} campanhas</span>
+          <span className="text-xs text-gray-400">{rowCountLabel || `${rowCount} SubIDs no período`}</span>
         </div>
 
         <div className="space-y-3 text-xs">

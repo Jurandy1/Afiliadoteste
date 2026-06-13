@@ -2491,11 +2491,9 @@ function buildShopeeApiFaithfulDayMap(nodes, dateKey = null) {
  * Agregação alinhada ao app Shopee Afiliados (sem escala):
  * comissão 1× por node conversionReport; pedidos amplos; GMV sem filtro displayItemStatus.
  */
-/** node_once: netCommission > 0 senao totalCommission (evita net "0" string que quebra ??). */
+/** node_once: totalCommission (painel Shopee), igual comissaoDoNode. */
 function nodeOnceCommission(node) {
-  const net = parseFloat(node.netCommission || "0") || 0;
-  if (net > 0) return net;
-  return parseFloat(node.totalCommission || "0") || comissaoDoNode(node);
+  return comissaoDoNode(node);
 }
 
 function pedidosValidadosNaConversao(node) {

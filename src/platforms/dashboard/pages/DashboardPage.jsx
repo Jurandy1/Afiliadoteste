@@ -22,12 +22,14 @@ import {
   comissaoKpiTrendPedidosPendentes,
   comissaoKpiSubTrendSplit,
   enriquecerKpisComTrafego,
-  lucroKpiTrendLiquidado,
   lucroKpiTrendProjetado,
-  roiKpiTrendLiquidado,
   roiKpiTrendProjetado,
   comissaoProjetadaValor,
   calcTicketPorPedido,
+  somarVendasDiretasIndiretasSubIds,
+  contarSubIdsComVenda,
+  contarSubIdsNoPeriodo,
+  formatMetaMensalProgress,
 } from "../../../utils/formatters";
 import LoadingSpinner from "../../../components/layout/LoadingSpinner";
 import { usePageToolbar } from "../../../components/layout/PageToolbarContext";
@@ -618,6 +620,17 @@ export default function DashboardPage() {
     [data?.kpis, data?.subIds],
   );
   const subIds            = data?.subIds;
+
+  /** KPIs de volume alinhados à soma SubID (bate com TOTAL da tabela). */
+  const kpisVolume = useMemo(() => {
+    if (!kpis) return undefined;
+    if (!subIds?.length) return kpis;
+    const { vendasDiretas, vendasIndiretas } = somarVendasDiretasIndiretasSubIds(subIds);
+    return { ...kpis, vendasDiretas, vendasIndiretas };
+  }, [kpis, subIds]);
+
+  const subIdsComVenda = useMemo(() => contarSubIdsComVenda(subIds), [subIds]);
+  const subIdsNoPeriodo = useMemo(() => contarSubIdsNoPeriodo(subIds), [subIds]);
   const chartData         = data?.chartData || [];
   const subIdDiagnostics  = data?.subIdDiagnostics;
   const operationalAlerts = data?.operationalAlerts || [];
@@ -696,6 +709,21 @@ export default function DashboardPage() {
     });
     return rows;
   }, [subIds, onlyLoss, onlyProfit, subSortField, subSortDir, subSearch, subIdsSelecionados]);
+
+  const subIdsTabelaLabel = useMemo(() => {
+    const filtrado = Boolean(subSearch || onlyLoss || onlyProfit || subIdsSelecionados.length > 0);
+    if (filtrado) {
+      return `${fmtNum(subIdsFilteredSorted.length)} de ${fmtNum(subIdsNoPeriodo)} SubIDs (filtro ativo)`;
+    }
+    return `${fmtNum(subIdsNoPeriodo)} SubIDs no período`;
+  }, [
+    subIdsFilteredSorted.length,
+    subIdsNoPeriodo,
+    subSearch,
+    onlyLoss,
+    onlyProfit,
+    subIdsSelecionados.length,
+  ]);
 
   const subIdTableTotals = useMemo(() => {
     const totals = subIdsFilteredSorted.reduce((acc, r) => {
@@ -894,7 +922,6 @@ export default function DashboardPage() {
     return <LoadingSpinner />;
   }
 
-  const lucroUp = (kpis?.lucro || 0) >= 0;
   const periodoSemVendas = filtroPeriodoAtivo
     && (data.kpis?.totalComissao || 0) === 0
     && (data.kpis?.totalVendas || 0) === 0
@@ -929,8 +956,8 @@ export default function DashboardPage() {
           <PerformanceHeroFinanceiro kpis={kpis} />
           <StatusPedidosCards kpis={kpis} perdas={data?.perdas} />
           <PerformanceHeroVolume
-            kpis={kpis}
-            subIdsCount={(subIds || []).filter((r) => (r.comissoes || 0) > 0 || (r.total_vendas || 0) > 0).length}
+            kpis={kpisVolume || kpis}
+            subIdsComVenda={subIdsComVenda}
             metaMensal={settings.metaMensal}
             showMetaMensal={periodoFiltro === "mes_atual"}
           />
@@ -945,7 +972,7 @@ export default function DashboardPage() {
           />
         </section>
 
-        <DashboardSection title="Detalhes financeiros" subtitle="Liquidado (contábil) e projetado (operacional) — gasto, lucro e ticket">
+        <DashboardSection title="Detalhes financeiros" subtitle="Projetado (operacional) — gasto, lucro e ticket">
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <KPICard
           badge="Pendente"
@@ -958,17 +985,6 @@ export default function DashboardPage() {
           trend={comissaoKpiTrendPedidosPendentes(kpis)}
           subTrend={comissaoKpiSubTrendSplit(kpis)}
           up={comissaoPendenteKpiValor(kpis) >= 0}
-        />
-        <KPICard
-          badge="Liquidado"
-          icon={<DollarSign size={18} />}
-          iconBg="bg-emerald-100 text-emerald-700"
-          accentTop="border-t-emerald-500"
-          tint="from-emerald-50/70"
-          label="Comissão liquidada"
-          value={fmt(kpis.comissaoConcluida || 0)}
-          trend={`${fmtNum(kpis.pedidosConcluidos || 0)} conversões concluídas`}
-          up={(kpis.comissaoConcluida || 0) >= 0}
         />
         <KPICard
           badge="Projetado"
@@ -991,7 +1007,7 @@ export default function DashboardPage() {
           value={fmt(kpis.faturamentoBruto)}
           trend={
             periodoFiltro === "mes_atual" && settings.metaMensal > 0
-              ? `${Math.min(100, ((kpis.faturamentoBruto || 0) / settings.metaMensal) * 100).toFixed(0)}% da meta mensal`
+              ? formatMetaMensalProgress(kpis.faturamentoBruto, settings.metaMensal).headline
               : `${fmtNum(kpis.totalVendas)} itens negociados`
           }
           subTrend={
@@ -1012,18 +1028,6 @@ export default function DashboardPage() {
           trend={`Meta ${fmt(kpis.metaTotalGasto)} · Pin ${fmt(kpis.pinTotalGasto)}`}
         />
         <KPICard
-          badge="Liquidado"
-          icon={<BarChart3 size={18} />}
-          iconBg={lucroUp ? "bg-emerald-100 text-emerald-700" : "bg-red-100 text-red-700"}
-          accentTop={lucroUp ? "border-t-emerald-500" : "border-t-red-500"}
-          tint={lucroUp ? "from-emerald-50/70" : "from-red-50/60"}
-          label="Lucro liquidado"
-          value={fmt(kpis.lucro)}
-          trend={lucroKpiTrendLiquidado(kpis, kpis.totalInvestimento, kpis.impostoTotal)}
-          up={lucroUp}
-          down={!lucroUp}
-        />
-        <KPICard
           badge="Projetado"
           icon={<BarChart3 size={18} />}
           iconBg={(kpis.lucroProjetado || 0) >= 0 ? "bg-violet-100 text-violet-700" : "bg-red-100 text-red-700"}
@@ -1034,18 +1038,6 @@ export default function DashboardPage() {
           trend={lucroKpiTrendProjetado(kpis)}
           up={(kpis.lucroProjetado || 0) >= 0}
           down={(kpis.lucroProjetado || 0) < 0}
-        />
-        <KPICard
-          badge="Liquidado"
-          icon={<TrendingUp size={18} />}
-          iconBg="bg-slate-100 text-slate-700"
-          accentTop="border-t-slate-500"
-          tint="from-slate-50/80"
-          label="ROI liquidado"
-          value={((kpis.roiGeral || 0) * 100).toFixed(2) + "%"}
-          trend={roiKpiTrendLiquidado(kpis)}
-          up={(kpis.roiGeral || 0) >= 0}
-          down={(kpis.roiGeral || 0) < 0}
         />
         <KPICard
           badge="Projetado"
@@ -1067,7 +1059,7 @@ export default function DashboardPage() {
           tint="from-orange-50/70"
           label="Itens vendidos"
           value={fmtNum(kpis.totalVendas)}
-          trend={`${fmtNum(kpis.vendasDiretas)}D / ${fmtNum(kpis.vendasIndiretas)}I`}
+          trend={`${fmtNum((kpisVolume || kpis)?.vendasDiretas || 0)}D / ${fmtNum((kpisVolume || kpis)?.vendasIndiretas || 0)}I`}
           up
         />
         <KPICard
@@ -1186,7 +1178,7 @@ export default function DashboardPage() {
                     Detalhamento por SubID
                     {loadingSubIds && <span className="ml-2 text-xs font-normal text-gray-400">carregando…</span>}
                   </h3>
-                  <span className="text-xs text-gray-400">{subIdsFilteredSorted.length} campanhas</span>
+                  <span className="text-xs text-gray-400">{subIdsTabelaLabel}</span>
                 </div>
                 <SubIdDesktopToolbar
                   subSearch={subSearch}
@@ -1212,6 +1204,7 @@ export default function DashboardPage() {
             <SubIdMobilePanel
               loadingSubIds={loadingSubIds}
               rowCount={subIdsFilteredSorted.length}
+              rowCountLabel={subIdsTabelaLabel}
               subSearch={subSearch}
               setSubSearch={setSubSearch}
               subCols={subCols}

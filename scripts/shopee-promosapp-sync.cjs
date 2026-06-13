@@ -10,7 +10,11 @@
  *   set GOOGLE_APPLICATION_CREDENTIALS=caminho\serviceAccount.json
  *   node scripts/shopee-promosapp-sync.cjs
  *   node scripts/shopee-promosapp-sync.cjs 2026-06-12
+ *   node scripts/shopee-promosapp-sync.cjs --start 2026-06-01 --end 2026-06-12
  *   node scripts/shopee-promosapp-sync.cjs 2026-06-12 --dry-run
+ *
+ * Após sync em lote, salva output/shopee-pull-YYYY-MM-DD__YYYY-MM-DD.json
+ * Use no audit com --nodes para validar Firestore sem novo fetch da API.
  *
  * Credenciais Shopee: SHOPEE_APP_ID + SHOPEE_APP_SECRET (ou SHOPEE_SECRET) em .env.local
  * Firebase: GOOGLE_APPLICATION_CREDENTIALS ou ADC padrão
@@ -43,7 +47,17 @@ function loadEnvFiles() {
   }
 }
 
-loadEnvFiles();
+loadEnvFiles()
+
+const {
+  dedupePullNodes,
+  buildShopeePanelAppDayMap,
+  dayEntryToFirestoreDoc,
+  createEmptyDayEntry,
+  finalizeSubFirestore,
+  formatUnixToBRTDate,
+  AGGREGATION_MODE,
+} = require("../functions/lib/shopeePanelAppAgg");
 
 if (!process.env.SHOPEE_APP_SECRET && process.env.SHOPEE_SECRET) {
   process.env.SHOPEE_APP_SECRET = process.env.SHOPEE_SECRET;
@@ -52,6 +66,19 @@ if (!process.env.SHOPEE_APP_SECRET && process.env.SHOPEE_SECRET) {
 const argv = process.argv.slice(2);
 const DRY_RUN = argv.includes("--dry-run") || process.env.DRY_RUN === "1";
 const DATE_ARG = argv.find((a) => /^\d{4}-\d{2}-\d{2}$/.test(a)) || "";
+
+function parseFlag(name) {
+  const eq = argv.find((a) => a.startsWith(`--${name}=`));
+  if (eq) return eq.split("=").slice(1).join("=");
+  const idx = argv.indexOf(`--${name}`);
+  if (idx >= 0 && argv[idx + 1] && !argv[idx + 1].startsWith("--")) {
+    return argv[idx + 1];
+  }
+  return "";
+}
+
+const RANGE_START = parseFlag("start");
+const RANGE_END = parseFlag("end") || RANGE_START;
 
 const TIME_ZONE = process.env.SHOPEE_TZ || "America/Sao_Paulo";
 const SHOPEE_BASE_URL =
@@ -74,6 +101,25 @@ let db = null;
 
 function getFirestore() {
   if (db) return db;
+
+  const credPath = String(process.env.GOOGLE_APPLICATION_CREDENTIALS || "").trim();
+  if (credPath && !fs.existsSync(credPath)) {
+    throw new Error(
+      `Arquivo de credenciais não encontrado:\n  ${credPath}\n\n` +
+        "Baixe a service account no Firebase Console (projetoafiliado-9ff07):\n" +
+        "  Configurações do projeto → Contas de serviço → Gerar nova chave privada\n\n" +
+        "Depois aponte para o arquivo REAL (não use o placeholder 'caminho\\' do README):\n" +
+        '  set GOOGLE_APPLICATION_CREDENTIALS=C:\\Users\\PC\\Downloads\\projetoafiliado-9ff07-xxxx.json',
+    );
+  }
+  if (!credPath) {
+    throw new Error(
+      "GOOGLE_APPLICATION_CREDENTIALS não definido.\n\n" +
+        "Baixe a chave JSON no Firebase Console e rode:\n" +
+        '  set GOOGLE_APPLICATION_CREDENTIALS=C:\\caminho\\real\\para\\chave.json',
+    );
+  }
+
   function requireFirebaseAdmin() {
     try {
       return require("firebase-admin");
@@ -94,7 +140,7 @@ const SUBID_ALIASES = {
 };
 
 function roundMoney(n) {
-  return Math.round((Number(n || 0) + Number.EPSILON) * 100) / 100;
+  return Math.round(Number(n || 0) * 100) / 100;
 }
 
 function parseNum(v) {
@@ -232,6 +278,34 @@ function getDateRange(dateKey) {
   };
 }
 
+function compareYmd(a, b) {
+  if (a.year !== b.year) return a.year - b.year;
+  if (a.month !== b.month) return a.month - b.month;
+  return a.day - b.day;
+}
+
+function addUtcDays(parts, days) {
+  const d = new Date(Date.UTC(parts.year, parts.month - 1, parts.day + days));
+  return { year: d.getUTCFullYear(), month: d.getUTCMonth() + 1, day: d.getUTCDate() };
+}
+
+function listDateKeysInRange(startKey, endKey) {
+  const start = parseYmd(startKey);
+  const end = parseYmd(endKey);
+  if (compareYmd(start, end) > 0) {
+    throw new Error("Data inicial maior que a final.");
+  }
+  const out = [];
+  let current = start;
+  while (compareYmd(current, end) <= 0) {
+    out.push(
+      `${current.year}-${String(current.month).padStart(2, "0")}-${String(current.day).padStart(2, "0")}`,
+    );
+    current = addUtcDays(current, 1);
+  }
+  return out;
+}
+
 function buildShopeeQuery(startTs, endTs, scrollId = null) {
   const scroll = scrollId ? `, scrollId: ${JSON.stringify(scrollId)}` : "";
 
@@ -328,13 +402,40 @@ async function fetchAllNodes(startTs, endTs) {
     const nodes = Array.isArray(report.nodes) ? report.nodes : [];
     all.push(...nodes);
     pages += 1;
-    process.stderr.write(`  página ${pages}: +${nodes.length} (total ${all.length})\n`);
+    process.stderr.write(`  página ${pages}: +${nodes.length} (total bruto ${all.length})\n`);
 
     if (!report.pageInfo?.hasNextPage || !report.pageInfo?.scrollId) break;
     scrollId = report.pageInfo.scrollId;
   }
 
-  return { nodes: all, pages };
+  const deduped = dedupePullNodes(all);
+  if (deduped.length !== all.length) {
+    process.stderr.write(
+      `  dedupe cid+orderId: ${all.length} → ${deduped.length} nodes\n`,
+    );
+  }
+
+  return { nodes: deduped, rawNodes: all.length, pages };
+}
+
+function savePullSnapshot(dates, prefetched) {
+  const outDir = path.join(__dirname, "..", "output");
+  fs.mkdirSync(outDir, { recursive: true });
+  const file = path.join(
+    outDir,
+    `shopee-pull-${dates[0]}__${dates[dates.length - 1]}.json`,
+  );
+  const payload = {
+    startDateKey: dates[0],
+    endDateKey: dates[dates.length - 1],
+    pulledAt: new Date().toISOString(),
+    pages: prefetched.pages,
+    rawNodes: prefetched.rawNodes,
+    pullUniqueNodes: prefetched.nodes.length,
+    nodes: prefetched.nodes,
+  };
+  fs.writeFileSync(file, JSON.stringify(payload));
+  return file;
 }
 
 function groupNodesByConversionId(nodes) {
@@ -856,7 +957,7 @@ function printSummary(result) {
   console.log("");
   console.log(`Sync PromosApp — ${result.dateKey}`);
   console.log("---------------------------");
-  console.log(`Páginas API: ${result.pages} | nodes brutos: ${result.rawNodes} | conversões únicas: ${result.uniqueConversions}`);
+  console.log(`Páginas API: ${result.pages} | nodes brutos: ${result.rawNodes} | únicos pull: ${result.pullUniqueNodes} | grupos conversão: ${result.uniqueConversions}`);
   console.log(`Pedidos: ${d.pedidos} (${d.pedidos_concluidos} concl. / ${d.pedidos_pendentes} pend.)`);
   console.log(`Itens (vendas): ${d.vendas} | GMV: R$ ${d.faturamento.toFixed(2)}`);
   console.log(`Comissão: R$ ${comissao.toFixed(2)} (concl. R$ ${d.comissao_concluida.toFixed(2)} + pend. R$ ${d.comissao_pendente.toFixed(2)})`);
@@ -872,18 +973,100 @@ async function run(options = {}) {
   const dryRun = options.dryRun ?? DRY_RUN;
   const { dateKey, startTs, endTs } = getDateRange(options.date || DATE);
 
-  process.stderr.write(`Buscando API Shopee ${dateKey} (${startTs}–${endTs})…\n`);
-  const fetched = await fetchAllNodes(startTs, endTs);
-  const { nodes, conversionGroups } = prepareNodesForAggregation(fetched.nodes);
-  const aggregated = aggregatePromosApp(nodes, dateKey);
+  let fetched = options.prefetched;
+  if (!fetched) {
+    process.stderr.write(`Buscando API Shopee ${dateKey} (${startTs}–${endTs})…\n`);
+    fetched = await fetchAllNodes(startTs, endTs);
+  } else {
+    process.stderr.write(`Agregando ${dateKey} (pull único, ${fetched.nodes.length} nodes)…\n`);
+  }
+
+  const { dayMap, conversionGroups } = buildShopeePanelAppDayMap(
+    fetched.nodes,
+    dateKey,
+    "node_once",
+    { normalizeSubId: normalizeShopeeSubId, trackSubIds: true, timeZone: TIME_ZONE },
+  );
+
+  let dayEntry = dayMap[dateKey];
+  if (!dayEntry) {
+    process.stderr.write(
+      `  aviso: API Shopee sem conversões em ${dateKey} — gravando KPIs Shopee zerados (Meta pode ter gasto)\n`,
+    );
+    dayEntry = createEmptyDayEntry(dateKey);
+  }
+
+  const dayDoc = {
+    ...dayEntryToFirestoreDoc(dayEntry),
+    origem: "shopee_promosapp_sync_script",
+  };
+
+  const subEntries = Array.from(dayEntry._subMap?.entries() || []);
+  const MIN_COMISSAO = 1;
+  const subDocs = [];
+  const cauda = [];
+
+  for (const [key, val] of subEntries) {
+    const doc = {
+      id: `${dateKey}_${key}`,
+      data: finalizeSubFirestore(val, dateKey),
+    };
+    if (roundMoney(val.commissionProjected) >= MIN_COMISSAO) {
+      subDocs.push(doc);
+    } else {
+      cauda.push(val);
+    }
+  }
+
+  if (cauda.length > 0) {
+    const agg = {
+      subid: "__outros_canais",
+      commissionProjected: 0,
+      commissionLiquidated: 0,
+      commissionPending: 0,
+      itemsSold: 0,
+      gmv: 0,
+      directItems: 0,
+      indirectItems: 0,
+      validOrders: new Set(),
+      conversionsCompleted: 0,
+      conversionsPendingOrders: 0,
+      cancelledOrders: 0,
+      unpaidOrders: 0,
+    };
+    for (const val of cauda) {
+      agg.commissionProjected += val.commissionProjected;
+      agg.commissionLiquidated += val.commissionLiquidated;
+      agg.commissionPending += val.commissionPending;
+      agg.itemsSold += val.itemsSold;
+      agg.gmv += val.gmv;
+      agg.directItems += val.directItems;
+      agg.indirectItems += val.indirectItems;
+      for (const oid of val.validOrders) agg.validOrders.add(oid);
+    }
+    subDocs.push({
+      id: `${dateKey}__outros_canais`,
+      data: {
+        ...finalizeSubFirestore(agg, dateKey),
+        subids_count: cauda.length,
+      },
+    });
+  }
+
+  // Produtos: mantém agregação detalhada legada quando necessário
+  const nodesForLegacy = fetched.nodes.filter(
+    (node) => formatUnixToBRTDate(node?.purchaseTime, TIME_ZONE) === dateKey,
+  );
+  const { nodes: preparedNodes } = prepareNodesForAggregation(nodesForLegacy);
+  const legacy = aggregatePromosApp(preparedNodes, dateKey);
 
   let writes = 0;
   if (!dryRun) {
     writes = await writeFirestore({
       dateKey,
-      dayDoc: aggregated.dayDoc,
-      subDocs: aggregated.subDocs,
-      productDocs: aggregated.productDocs,
+      dayDoc,
+      subDocs: subDocs.length ? subDocs : legacy.subDocs,
+      productDocs: legacy.productDocs,
     });
   }
 
@@ -891,24 +1074,51 @@ async function run(options = {}) {
     dateKey,
     dryRun,
     pages: fetched.pages,
-    rawNodes: fetched.nodes.length,
+    rawNodes: fetched.rawNodes,
+    pullUniqueNodes: fetched.nodes.length,
     uniqueConversions: conversionGroups,
     firestoreWrites: writes,
-    shopeeDaily: aggregated.dayDoc,
-    subids: aggregated.subDocs.length,
-    produtos: aggregated.productDocs.length,
+    shopeeDaily: dayDoc,
+    subids: subDocs.length || legacy.subDocs.length,
+    produtos: legacy.productDocs.length,
   };
 
   return result;
 }
 
 if (require.main === module) {
-  run()
-    .then((result) => {
-      printSummary(result);
-      console.log(JSON.stringify(result, null, 2));
-      process.exit(0);
-    })
+  const runMain = async () => {
+    if (RANGE_START) {
+      const dates = listDateKeysInRange(RANGE_START, RANGE_END);
+      const rangeStart = getDateRange(dates[0]).startTs;
+      const rangeEnd = getDateRange(dates[dates.length - 1]).endTs;
+      console.log(
+        `Sync PromosApp em lote: ${dates[0]} → ${dates[dates.length - 1]} (${dates.length} dias, pull único)`,
+      );
+      process.stderr.write(
+        `Buscando API Shopee pull único ${dates[0]} → ${dates[dates.length - 1]}…\n`,
+      );
+      const prefetched = await fetchAllNodes(rangeStart, rangeEnd);
+      const snapFile = savePullSnapshot(dates, prefetched);
+      console.log(`Pull Shopee salvo: ${snapFile}`);
+      for (const dateKey of dates) {
+        const result = await run({ date: dateKey, dryRun: DRY_RUN, prefetched });
+        printSummary(result);
+      }
+      console.log(
+        `\nValidar Firestore (mesmo pull, sem drift da API):\n` +
+          `  node scripts/meta-shopee-dashboard-audit-range.cjs --start ${dates[0]} --end ${dates[dates.length - 1]} --nodes ${snapFile} --firestore-compare --no-meta-api\n`,
+      );
+      return;
+    }
+
+    const result = await run({ dryRun: DRY_RUN });
+    printSummary(result);
+    console.log(JSON.stringify(result, null, 2));
+  };
+
+  runMain()
+    .then(() => process.exit(0))
     .catch((err) => {
       console.error("");
       console.error("Erro no sync PromosApp:");

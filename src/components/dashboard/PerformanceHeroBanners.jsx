@@ -8,7 +8,10 @@ import {
   comissaoLiquidacaoContexto,
   formatTaxaConversaoPedidos,
   calcTicketPorPedido,
-  roasLiquidado,
+  formatMetaMensalProgress,
+  somarVendasDiretasIndiretasSubIds,
+  contarSubIdsComVenda,
+  contarSubIdsNoPeriodo,
   roasProjetado,
 } from "../../utils/formatters";
 
@@ -47,9 +50,8 @@ function HeroMetric({ icon: Icon, label, value, sub }) {
   );
 }
 
-/** Bloco 1 — Financeiro: liquidado vs projetado lado a lado. */
+/** Bloco 1 — Financeiro: comissão, ROI, lucro e ROAS projetados. */
 export function PerformanceHeroFinanceiro({ kpis = {} }) {
-  const roiLiquidado = ((kpis.roiGeral || 0) * 100).toFixed(2);
   const roiProjetado = ((kpis.roiProjetado || 0) * 100).toFixed(2);
   const contextoPendente = comissaoLiquidacaoContexto(kpis);
 
@@ -60,14 +62,7 @@ export function PerformanceHeroFinanceiro({ kpis = {} }) {
         Financeiro — tráfego e comissão
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
-        <FinanceDualPanel
-          label="Liquidado"
-          comissao={kpis.comissaoConcluida || 0}
-          roiPct={roiLiquidado}
-          lucro={kpis.lucro || 0}
-          roas={roasLiquidado(kpis)}
-        />
+      <div className="mb-4">
         <FinanceDualPanel
           label="Projetado"
           comissao={comissaoProjetadaValor(kpis)}
@@ -100,13 +95,13 @@ export function PerformanceHeroFinanceiro({ kpis = {} }) {
 /** Bloco 3 — Volume: GMV, itens, tickets, diretas/indiretas. */
 export function PerformanceHeroVolume({
   kpis = {},
-  subIdsCount = 0,
+  subIdsComVenda = 0,
   metaMensal = 0,
   showMetaMensal = false,
 }) {
   const fatBruto = Number(kpis.faturamentoBruto) || 0;
   const meta = Number(metaMensal) || 0;
-  const metaPct = meta > 0 ? (fatBruto / meta) * 100 : 0;
+  const metaProgress = formatMetaMensalProgress(fatBruto, meta);
   const metaBatida = meta > 0 && fatBruto >= meta;
   const ticketPedido = calcTicketPorPedido(kpis);
   const taxaAds = formatTaxaConversaoPedidos(kpis);
@@ -118,7 +113,12 @@ export function PerformanceHeroVolume({
         Volume — vendas Shopee
       </div>
       <div className="grid grid-cols-2 gap-4">
-        <HeroMetric icon={Target} label="SubIDs ativos" value={fmtNum(subIdsCount)} />
+        <HeroMetric
+          icon={Target}
+          label="SubIDs com venda"
+          value={fmtNum(subIdsComVenda)}
+          sub="Com comissão ou itens no período"
+        />
         <HeroMetric icon={ShoppingBag} label="Itens vendidos" value={fmtNum(kpis.totalVendas || 0)} />
         <HeroMetric icon={TrendingUp} label="Fat. bruto (GMV)" value={fmt(fatBruto)} />
         <HeroMetric
@@ -137,20 +137,22 @@ export function PerformanceHeroVolume({
         <div className="mt-4 pt-3 border-t border-white/15">
           <div className="flex items-center justify-between gap-2 text-[11px] text-white/80 mb-1.5">
             <span className="font-medium">Meta mensal de faturamento</span>
-            <span className="font-semibold">{Math.min(metaPct, 999).toFixed(0)}%</span>
+            <span className="font-semibold">{metaProgress.headline}</span>
           </div>
           <div className="h-2 rounded-full bg-white/20 overflow-hidden">
             <div
               className="h-full rounded-full bg-white transition-all duration-500"
-              style={{ width: `${Math.min(metaPct, 100)}%` }}
+              style={{ width: `${metaProgress.barPct}%` }}
             />
           </div>
           <div className="mt-1.5 text-[11px] text-white/70 flex flex-wrap justify-between gap-x-3 gap-y-0.5">
-            <span>{fmt(fatBruto)} de {fmt(meta)}</span>
+            <span>{fmt(metaProgress.fat)} de {fmt(metaProgress.meta)}</span>
             <span>
-              {metaBatida
-                ? `Meta batida (+${fmt(fatBruto - meta)})`
-                : `Faltam ${fmt(meta - fatBruto)}`}
+              {metaProgress.ratio >= 10
+                ? metaProgress.detailPct
+                : metaBatida
+                  ? `Meta batida (+${fmt(fatBruto - meta)})`
+                  : `Faltam ${fmt(meta - fatBruto)}`}
             </span>
           </div>
         </div>
