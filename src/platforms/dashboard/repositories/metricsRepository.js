@@ -1165,24 +1165,17 @@ export async function getShopeeDashboardDataVersion() {
 }
 
 const alvoAlinhamentoCache = new Map();
-const shopeeDailyQueryCache = new Map();
 
 export function clearDashboardQueryCaches() {
   invalidateMetaAdsDailyCache(1500); // 1.5s debounce to prevent churn
   perdasKpiCache.clear();
   alvoAlinhamentoCache.clear();
-  shopeeDailyQueryCache.clear();
   clearMetaAdsCache();
   invalidateDataVersionsCache();
   invalidateProdutoMensalCache();
 }
 
 export async function fetchShopeeDailyDocsForRange(startDate, endDate) {
-  const cacheKey = `${startDate}|${endDate}`;
-  if (shopeeDailyQueryCache.has(cacheKey)) {
-    return shopeeDailyQueryCache.get(cacheKey);
-  }
-
   const dailyRef = collection(db, "shopee_daily");
   let docs = [];
   if (startDate === endDate) {
@@ -1200,7 +1193,6 @@ export async function fetchShopeeDailyDocsForRange(startDate, endDate) {
     const snap = await getDocs(q);
     docs = snap.docs;
   }
-  shopeeDailyQueryCache.set(cacheKey, docs);
   return docs;
 }
 
