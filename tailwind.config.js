@@ -30,6 +30,16 @@ export default {
         xl: "12px",
         "2xl": "16px",
       },
+      keyframes: {
+        shimmer: {
+          "100%": {
+            transform: "translateX(100%)",
+          },
+        },
+      },
+      animation: {
+        shimmer: "shimmer 2s infinite",
+      },
     },
   },
   plugins: [],

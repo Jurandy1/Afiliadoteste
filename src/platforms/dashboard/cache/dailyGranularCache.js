@@ -1,4 +1,4 @@
-import { doc, getDoc } from "firebase/firestore";
+import { doc, getDoc, documentId } from "firebase/firestore";
 import { collection, query, where, getDocs } from "firebase/firestore";
 import { db } from "../../../services/firebase/client";
 import { idbGet, idbSet } from "./indexedDbCache";
@@ -20,12 +20,12 @@ export async function getDailyVersionsManifest(force = false) {
 }
 
 export async function getDailyCache(colName, dateStr) {
-  const key = `daily_${colName}_${dateStr}`;
+  const key = `daily_v2_${colName}_${dateStr}`;
   return idbGet(key);
 }
 
 export async function setDailyCache(colName, dateStr, payload, version) {
-  const key = `daily_${colName}_${dateStr}`;
+  const key = `daily_v2_${colName}_${dateStr}`;
   await idbSet(key, { payload, version, savedAt: Date.now() });
 }
 
@@ -73,10 +73,11 @@ export async function fetchSmartDailyCollection(colName, startStr, endStr, optio
     const minDate = missingDates[0];
     const maxDate = missingDates[missingDates.length - 1];
 
+    const isShopeeDaily = colName === "shopee_daily";
     const q = query(
       collection(db, colName),
-      where("data", ">=", minDate),
-      where("data", "<=", maxDate)
+      where(isShopeeDaily ? documentId() : "data", ">=", minDate),
+      where(isShopeeDaily ? documentId() : "data", "<=", maxDate)
     );
     const snap = await getDocs(q).catch(() => ({ empty: true, forEach: () => {} }));
 

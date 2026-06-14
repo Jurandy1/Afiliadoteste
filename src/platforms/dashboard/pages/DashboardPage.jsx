@@ -31,7 +31,7 @@ import {
   contarSubIdsNoPeriodo,
   formatMetaMensalProgress,
 } from "../../../utils/formatters";
-import LoadingSpinner from "../../../components/layout/LoadingSpinner";
+import DashboardSkeleton from "../components/DashboardSkeleton";
 import { usePageToolbar } from "../../../components/layout/PageToolbarContext";
 import KPICard from "../../../components/cards/KPICard";
 import EmptyState from "../../../components/cards/EmptyState";
@@ -928,7 +928,11 @@ export default function DashboardPage() {
   }
 
   if (!data) {
-    return <LoadingSpinner />;
+    return (
+      <div className="p-4 md:p-6 lg:p-8 max-w-[1600px] mx-auto space-y-6">
+        <DashboardSkeleton />
+      </div>
+    );
   }
 
   const periodoSemVendas = filtroPeriodoAtivo

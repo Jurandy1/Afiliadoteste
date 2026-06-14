@@ -97,7 +97,16 @@ export default function SubIdDailyBreakdownTable({
   onSort,
 }) {
   if (loading) {
-    return <div className="text-center py-8 text-gray-500 text-sm">Carregando desempenho diário…</div>;
+    return (
+      <div className="bg-white rounded-xl shadow-card border border-surface-border p-6 h-64 flex flex-col space-y-4">
+        <div className="h-6 w-1/4 bg-gray-100 animate-pulse rounded" />
+        <div className="flex-1 space-y-3 mt-4">
+          {[...Array(4)].map((_, i) => (
+            <div key={i} className="h-8 w-full bg-gray-50 animate-pulse rounded" />
+          ))}
+        </div>
+      </div>
+    );
   }
 
   if (!rows?.length) {
