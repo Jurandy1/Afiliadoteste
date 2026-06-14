@@ -1183,14 +1183,23 @@ export async function fetchShopeeDailyDocsForRange(startDate, endDate) {
     return shopeeDailyQueryCache.get(cacheKey);
   }
 
-  const { fetchSmartDailyCollection } = await import("../cache/dailyGranularCache.js");
-  const dataArray = await fetchSmartDailyCollection("shopee_daily", startDate, endDate);
-  
-  const docs = dataArray.map(d => ({
-    data: () => d,
-    exists: () => true
-  }));
-
+  const dailyRef = collection(db, "shopee_daily");
+  let docs = [];
+  if (startDate === endDate) {
+    const snapDoc = await getDoc(doc(db, "shopee_daily", startDate));
+    const docValido = snapDoc.exists() && !isDailyMetricsVazio(snapDoc.data());
+    if (docValido) {
+      docs = [snapDoc];
+    }
+  } else {
+    const q = query(
+      dailyRef,
+      where(documentId(), ">=", startDate),
+      where(documentId(), "<=", endDate),
+    );
+    const snap = await getDocs(q);
+    docs = snap.docs;
+  }
   shopeeDailyQueryCache.set(cacheKey, docs);
   return docs;
 }
