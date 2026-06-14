@@ -1,4 +1,5 @@
 import { idbGet, idbSet, idbClear } from "../../dashboard/cache/indexedDbCache";
+import { trackCacheHit } from "../../../services/firebase/readTracker";
 
 const TTL_MS = 30 * 60 * 1000;
 export const CADASTRO_TTL_MS = 24 * 60 * 60 * 1000;
@@ -28,6 +29,7 @@ export async function cadastroGet(docId) {
   const e = await idbGet(idbKey);
   if (e && Date.now() - e.ts < CADASTRO_TTL_MS) {
     cadastroMem.set(docId, e);
+    trackCacheHit({ collection: "produtos", docs: 1, source: "produtosCache.js" });
     return e.data;
   }
   

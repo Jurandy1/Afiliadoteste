@@ -29,36 +29,45 @@ import {
 
 export async function getDocs(reference) {
   const source = captureSource();
+  const t0 = performance.now();
   const snap = await nativeGetDocs(reference);
+  const durationMs = Math.round(performance.now() - t0);
   trackFirestoreRead({
     op: "getDocs",
     collection: inferCollectionFromQuery(reference),
     docs: snap.size,
     source,
+    durationMs,
   });
   return snap;
 }
 
 export async function getDoc(reference) {
   const source = captureSource();
+  const t0 = performance.now();
   const snap = await nativeGetDoc(reference);
+  const durationMs = Math.round(performance.now() - t0);
   trackFirestoreRead({
     op: "getDoc",
     collection: inferCollectionFromQuery(reference),
     docs: 1,
     source,
+    durationMs,
   });
   return snap;
 }
 
 export async function getAggregateFromServer(reference, aggregateSpec) {
   const source = captureSource();
+  const t0 = performance.now();
   const snap = await nativeGetAggregateFromServer(reference, aggregateSpec);
+  const durationMs = Math.round(performance.now() - t0);
   trackFirestoreRead({
     op: "aggregate",
     collection: inferCollectionFromQuery(reference),
     docs: 1,
     source,
+    durationMs,
   });
   return snap;
 }

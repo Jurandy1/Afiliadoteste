@@ -32,11 +32,12 @@ const session = {
   dayKey: formatDateBRTYYYYMMDD(),
   totalReads: 0,
   totalWrites: 0,
+  totalCacheHits: 0,
   events: [],
   byCollection: {},
   bySource: {},
   byOp: {},
-  byPeriod: {}, // Novo agrupamento por filtro de período
+  byPeriod: {},
 };
 
 // Mapeamento amigável dos presets de período
@@ -103,6 +104,7 @@ function persistSessionDebounced() {
         dayKey: session.dayKey,
         totalReads: session.totalReads,
         totalWrites: session.totalWrites,
+        totalCacheHits: session.totalCacheHits,
         byCollection: session.byCollection,
         bySource: session.bySource,
         byOp: session.byOp,
@@ -126,6 +128,7 @@ function loadSessionFromStorage() {
     session.dayKey = today;
     session.totalReads = Number(parsed.totalReads) || 0;
     session.totalWrites = Number(parsed.totalWrites) || 0;
+    session.totalCacheHits = Number(parsed.totalCacheHits) || 0;
     session.byCollection = parsed.byCollection || {};
     session.bySource = parsed.bySource || {};
     session.byOp = parsed.byOp || {};
@@ -174,6 +177,7 @@ export function resetReadTracker() {
   session.dayKey = formatDateBRTYYYYMMDD();
   session.totalReads = 0;
   session.totalWrites = 0;
+  session.totalCacheHits = 0;
   session.events = [];
   session.byCollection = {};
   session.bySource = {};
@@ -233,11 +237,55 @@ export function captureSource() {
 }
 
 function pushEvent(ev) {
-  session.events.unshift(ev);
-  if (session.events.length > MAX_EVENTS) session.events.length = MAX_EVENTS;
+  const lastEv = session.events[0];
+  if (
+    lastEv && 
+    lastEv.kind === ev.kind && 
+    lastEv.op === ev.op && 
+    lastEv.collection === ev.collection &&
+    lastEv.source === ev.source &&
+    lastEv.period === ev.period &&
+    (ev.ts - lastEv.ts) < 300 // Agrupamento de rajadas de até 300ms
+  ) {
+    lastEv.docs += ev.docs;
+    lastEv.burstCount = (lastEv.burstCount || 1) + 1;
+    lastEv.durationMs = Math.max(lastEv.durationMs || 0, ev.durationMs || 0);
+    lastEv.ts = ev.ts; // Atualiza pro último timestamp da rajada
+    if (lastEv.burstCount >= 20 && lastEv.op === "getDoc") {
+      lastEv.nPlusOneAlert = true;
+    }
+  } else {
+    session.events.unshift(ev);
+    if (session.events.length > MAX_EVENTS) session.events.length = MAX_EVENTS;
+  }
 }
 
-export function trackFirestoreRead({ op, collection, docs, source }) {
+export function trackCacheHit({ collection, docs, source }) {
+  if (!enabled) return;
+  const col = collection || "desconhecido";
+  const count = Math.max(0, Number(docs) || 0);
+  if (count === 0) return;
+  const src = source || captureSource();
+  const activePeriod = getActivePeriodFilter();
+
+  session.totalCacheHits = (session.totalCacheHits || 0) + count;
+  
+  pushEvent({
+    ts: Date.now(),
+    kind: "cache",
+    op: "idbGet",
+    collection: col,
+    docs: count,
+    source: src,
+    period: activePeriod,
+    durationMs: 0
+  });
+
+  persistSessionDebounced();
+  notify();
+}
+
+export function trackFirestoreRead({ op, collection, docs, source, durationMs }) {
   if (!enabled) return;
   const col = collection || "desconhecido";
   if (shouldSkipCollection(col)) return;
@@ -263,6 +311,7 @@ export function trackFirestoreRead({ op, collection, docs, source }) {
     docs: count,
     source: src,
     period: activePeriod,
+    durationMs,
   });
 
   queueGlobalFlush({
@@ -277,7 +326,7 @@ export function trackFirestoreRead({ op, collection, docs, source }) {
   notify();
 }
 
-export function trackFirestoreWrite({ op, collection, docs, source }) {
+export function trackFirestoreWrite({ op, collection, docs, source, durationMs }) {
   if (!enabled) return;
   const col = collection || "desconhecido";
   if (shouldSkipCollection(col)) return;
@@ -301,6 +350,7 @@ export function trackFirestoreWrite({ op, collection, docs, source }) {
     docs: count,
     source: src,
     period: activePeriod,
+    durationMs,
   });
 
   queueGlobalFlush({
@@ -351,6 +401,7 @@ export function getFirestoreTrackerSnapshot(globalToday = null) {
     dayKey: session.dayKey,
     totalReads: session.totalReads,
     totalWrites: session.totalWrites,
+    totalCacheHits: session.totalCacheHits || 0,
     totalOps: sessionOps,
     readsPerMinute: Math.round(session.totalReads / elapsedMin),
     writesPerMinute: Math.round(session.totalWrites / elapsedMin),

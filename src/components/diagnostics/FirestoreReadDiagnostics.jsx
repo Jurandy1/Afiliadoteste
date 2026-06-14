@@ -169,12 +169,14 @@ export default function FirestoreReadDiagnostics() {
               <MetricCard label="Leituras (aba)" value={sessionReads.toLocaleString("pt-BR")} sub="persiste ao recarregar no mesmo dia" />
               <MetricCard label="Gravações (aba)" value={sessionWrites.toLocaleString("pt-BR")} />
               <MetricCard
-                label="Leituras/min"
-                value={stats.readsPerMinute.toLocaleString("pt-BR")}
+                label="Poupadas pelo Cache"
+                value={(stats.totalCacheHits || 0).toLocaleString("pt-BR")}
+                sub="Evitadas no Firestore hoje"
+                danger={false}
               />
               <MetricCard
-                label="Gravações/min"
-                value={stats.writesPerMinute.toLocaleString("pt-BR")}
+                label="Leituras/min"
+                value={stats.readsPerMinute.toLocaleString("pt-BR")}
               />
             </div>
           )}
@@ -278,6 +280,7 @@ export default function FirestoreReadDiagnostics() {
                 <table className="w-full text-[10px]">
                   <thead className="sticky top-0 bg-slate-50 text-slate-400">
                     <tr>
+                      <th className="text-left px-2 py-1">Hora (ms)</th>
                       <th className="text-left px-2 py-1">Tipo</th>
                       <th className="text-left px-2 py-1">Op</th>
                       <th className="text-left px-2 py-1">Coleção</th>
@@ -288,9 +291,19 @@ export default function FirestoreReadDiagnostics() {
                   </thead>
                   <tbody>
                     {stats.recentEvents.map((ev, i) => (
-                      <tr key={`${ev.ts}-${i}`} className="border-t border-slate-50">
-                        <td className="px-2 py-1 text-slate-500">{ev.kind === "write" ? "G" : "L"}</td>
-                        <td className="px-2 py-1 text-slate-500">{ev.op}</td>
+                      <tr key={`${ev.ts}-${i}`} className={`border-t border-slate-50 ${ev.nPlusOneAlert ? "bg-rose-100" : ""}`}>
+                        <td className="px-2 py-1 text-slate-400 tabular-nums">
+                          {new Date(ev.ts).toLocaleTimeString("pt-BR")}
+                          {ev.durationMs > 0 && <span className="text-slate-300 ml-1">({ev.durationMs}ms)</span>}
+                        </td>
+                        <td className="px-2 py-1 text-slate-500">
+                          {ev.kind === "cache" ? "C" : (ev.kind === "write" ? "G" : "L")}
+                        </td>
+                        <td className={`px-2 py-1 text-slate-500 ${ev.nPlusOneAlert ? "font-bold text-rose-700" : ""}`}>
+                          {ev.burstCount > 1 && <strong className="text-indigo-600 mr-1">[{ev.burstCount}x]</strong>}
+                          {ev.op}
+                          {ev.nPlusOneAlert && <span className="ml-1 text-rose-600" title="Gargalo detectado: muitas requisições isoladas! Use getDocs(in).">⚠️ N+1</span>}
+                        </td>
                         <td className="px-2 py-1 font-medium">{ev.collection}</td>
                         <td className="px-2 py-1 text-right tabular-nums">{ev.docs}</td>
                         <td className="px-2 py-1 font-semibold text-amber-700">{PERIOD_LABELS[ev.period] || ev.period || "—"}</td>
@@ -304,10 +317,10 @@ export default function FirestoreReadDiagnostics() {
           )}
 
           <p className="text-[10px] text-slate-400">
-            L = leitura · G = gravação. Console:{" "}
+            Console:{" "}
             <code className="bg-slate-100 px-1 rounded">window.__afiliaFirestoreTracker.snapshot()</code>
             {" · "}
-            Flush global a cada ~15s (não conta no diagnóstico).
+            L = leitura, G = gravação, C = cache local. Flush global a cada ~15s.
           </p>
         </>
       )}

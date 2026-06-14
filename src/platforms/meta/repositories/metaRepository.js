@@ -5,6 +5,7 @@
 import { collection, getDocs, limit, orderBy, query, where } from "firebase/firestore";
 import { db } from "../../../services/firebase/client";
 import { idbGet, idbSet } from "../../dashboard/cache/indexedDbCache";
+import { trackCacheHit } from "../../../services/firebase/readTracker";
 import { COLLECTIONS } from "../../../services/firebase/firestore";
 
 const metaAdsCache = new Map();
@@ -23,6 +24,7 @@ export async function getMetaAds(importacaoId = null) {
   const idbEntry = await idbGet(idbKey);
   if (idbEntry && Date.now() - idbEntry.ts < CACHE_TTL_MS) {
     metaAdsCache.set(cacheKey, idbEntry);
+    trackCacheHit({ collection: "meta_ads", docs: idbEntry.data.length, source: "metaRepository.js" });
     return idbEntry.data;
   }
 
