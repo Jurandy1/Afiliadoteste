@@ -83,8 +83,9 @@ export async function fetchSmartDailyCollection(colName, startStr, endStr, optio
     const fetchedByDate = {};
     snap.forEach((d) => {
       const data = d.data();
-      const dt = data.data;
+      const dt = data.data || d.id;
       if (dt) {
+        if (!data.data) data.data = dt;
         if (!fetchedByDate[dt]) fetchedByDate[dt] = [];
         fetchedByDate[dt].push(data);
       }
