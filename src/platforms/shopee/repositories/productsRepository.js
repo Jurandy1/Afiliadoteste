@@ -26,7 +26,7 @@ export async function getProdutosByItemIds(itemIds = []) {
   const hits = [];
   const missing = [];
   for (const docId of docIds) {
-    const cached = cadastroGet(docId);
+    const cached = await cadastroGet(docId);
     if (cached != null) {
       if (!cached._notFound) hits.push({ id: docId, ...cached });
     } else {

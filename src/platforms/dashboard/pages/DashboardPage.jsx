@@ -328,15 +328,7 @@ export default function DashboardPage() {
 
       if (stale()) return;
 
-      const cacheCompleto = Boolean(
-        kpisFromSumario
-        && (
-          (kpisFromSumario.pedidos || 0) > 0
-          || (kpisFromSumario.vendas || 0) > 0
-          || (kpisFromSumario.comissaoEstimada || kpisFromSumario.comissao || 0) > 0
-          || (kpisFromSumario.fatBruto || 0) > 0
-        )
-      );
+      const cacheCompleto = Boolean(kpisFromSumario);
 
       const fimPeriodoRecente = Boolean(
         range?.endDate && isDiaRecenteBRT(range.endDate, formatDateBRTYYYYMMDD()),
@@ -479,8 +471,7 @@ export default function DashboardPage() {
           if (stale()) return;
 
           const versionAfterSync = await getShopeeDashboardDataVersion().catch(() => 0);
-          const dadosMudaram = sync?.forced
-            || sync?.apiComDadosSemFirestore
+          const dadosMudaram = sync?.apiComDadosSemFirestore
             || dataVersionBeforeSync == null
             || versionAfterSync > dataVersionBeforeSync;
 

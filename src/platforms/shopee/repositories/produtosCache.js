@@ -1,3 +1,5 @@
+import { idbGet, idbSet, idbClear } from "../../dashboard/cache/indexedDbCache";
+
 const TTL_MS = 30 * 60 * 1000;
 export const CADASTRO_TTL_MS = 24 * 60 * 60 * 1000;
 const SS_PREFIX = "prodCadastro:";
@@ -18,39 +20,30 @@ export function setProdutosFullScanCache(data) {
   fullScanCache = { data, ts: Date.now() };
 }
 
-export function cadastroGet(docId) {
+export async function cadastroGet(docId) {
   const m = cadastroMem.get(docId);
   if (m && Date.now() - m.ts < CADASTRO_TTL_MS) return m.data;
-  try {
-    const raw = sessionStorage.getItem(SS_PREFIX + docId);
-    if (!raw) return null;
-    const e = JSON.parse(raw);
-    if (Date.now() - e.ts > CADASTRO_TTL_MS) return null;
+  
+  const idbKey = SS_PREFIX + docId;
+  const e = await idbGet(idbKey);
+  if (e && Date.now() - e.ts < CADASTRO_TTL_MS) {
     cadastroMem.set(docId, e);
     return e.data;
-  } catch {
-    return null;
   }
+  
+  return null;
 }
 
 export function cadastroSet(docId, data) {
   const e = { data, ts: Date.now() };
   cadastroMem.set(docId, e);
-  try {
-    sessionStorage.setItem(SS_PREFIX + docId, JSON.stringify(e));
-  } catch {
-    /* quota */
-  }
+  const idbKey = SS_PREFIX + docId;
+  idbSet(idbKey, e).catch(() => {});
 }
 
 export function invalidateProdutosCache() {
   fullScanCache = null;
   cadastroMem.clear();
-  try {
-    Object.keys(sessionStorage)
-      .filter((k) => k.startsWith(SS_PREFIX))
-      .forEach((k) => sessionStorage.removeItem(k));
-  } catch {
-    /* ignore */
-  }
+  // We won't clear the entire IDB here because it holds dashboard data too.
+  // Instead we let TTL handle expired products, or they will be refreshed as needed.
 }
