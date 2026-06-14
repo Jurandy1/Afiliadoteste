@@ -701,9 +701,13 @@ export async function getDatasDesatualizadas(startDate, endDate) {
 
 async function agregarKPIsDeSubIdDaily(startDate, endDate) {
   try {
-    const { fetchSmartDailyCollection } = await import("../cache/dailyGranularCache.js");
-    const dataArray = await fetchSmartDailyCollection("subid_daily", startDate, endDate);
-    if (!dataArray || dataArray.length === 0) return null;
+    const q = query(
+      collection(db, "subid_daily"),
+      where("data", ">=", startDate),
+      where("data", "<=", endDate),
+    );
+    const snapshot = await getDocs(q);
+    if (snapshot.empty) return null;
 
     const tot = {
       comissao_total: 0,
@@ -720,8 +724,8 @@ async function agregarKPIsDeSubIdDaily(startDate, endDate) {
     const porDia = {};
     const datasVistas = new Set();
 
-    dataArray.forEach((d) => {
-      d = d || {};
+    snapshot.forEach((docSnap) => {
+      const d = docSnap.data() || {};
       const data = d.data || startDate;
       datasVistas.add(data);
       tot.comissao_total += Number(d.comissoes || 0);
@@ -1477,12 +1481,15 @@ export async function montarBundleGranular(startStr, endStr, {
   settings = {},
   skipPin = false,
 } = {}) {
-  const { fetchSmartDailyCollection } = await import("../cache/dailyGranularCache.js");
-  const subidRows = await fetchSmartDailyCollection("subid_daily", startStr, endStr).catch(() => []);
+  const subidSnap = await getDocs(query(
+    collection(db, "subid_daily"),
+    where("data", ">=", startStr),
+    where("data", "<=", endStr),
+  )).catch(() => ({ empty: true, forEach: () => {} }));
 
   const subIdMap = {};
-  subidRows.forEach((row) => {
-    const d = row.data && typeof row.data === "function" ? row.data() : row;
+  subidSnap.forEach((docSnap) => {
+    const d = docSnap.data() || {};
     const raw = String(d.subid || "").trim();
     const subid = normalizeSubId(raw) || raw || "ORGANICO";
 
@@ -1846,10 +1853,14 @@ function mergeProdutoMensalSlice(produtoMap, mensalDoc, sliceStart, sliceEnd) {
 }
 
 async function fetchProdutoDailyRange(startStr, endStr) {
-  const { fetchSmartDailyCollection } = await import("../cache/dailyGranularCache.js");
-  const dataArray = await fetchSmartDailyCollection("produto_daily", startStr, endStr);
+  const q = query(
+    collection(db, "produto_daily"),
+    where("data", ">=", startStr),
+    where("data", "<=", endStr),
+  );
+  const snap = await getDocs(q).catch(() => ({ forEach: () => {} }));
   const produtoMap = {};
-  dataArray.forEach((data) => agregarProdutoDailyDoc(produtoMap, data || {}));
+  snap.forEach((docSnap) => agregarProdutoDailyDoc(produtoMap, docSnap.data() || {}));
   return produtoMap;
 }
 
