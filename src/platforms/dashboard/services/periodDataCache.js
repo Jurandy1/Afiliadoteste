@@ -79,7 +79,7 @@ async function warmProdutosEnrichedCache(startDate, endDate, settings, produtosP
   if (!produtosPeriodo?.length || isPeriodCacheDisabled()) return;
   const versions = await fetchDataVersions();
   const key = produtosEnrichedCacheKey(startDate, endDate, versions.versionKey, settings);
-  if (getPeriodCacheEntry(key)) return;
+  if (await getPeriodCacheEntry(key)) return;
 
   const enriched = await enrichProdutosPeriodoParaPainel(
     produtosPeriodo,
@@ -109,7 +109,7 @@ export async function getPainelPorPeriodoCached(
   const key = painelCacheKey(startDate, endDate, versions.versionKey, settings);
 
   if (!bypassCache) {
-    const cached = getPeriodCacheEntry(key);
+    const cached = await getPeriodCacheEntry(key);
     if (cached) {
       return { ...cached, _fromCache: true };
     }
@@ -154,7 +154,7 @@ export async function getShopeeProdutosEnrichedCached(
   const key = produtosEnrichedCacheKey(startDate, endDate, versions.versionKey, settings);
 
   if (!bypassCache) {
-    const cached = getPeriodCacheEntry(key);
+    const cached = await getPeriodCacheEntry(key);
     if (cached) {
       return { produtos: cached, _fromCache: true };
     }
@@ -177,7 +177,7 @@ export async function getPainelKpisFromSessionCache(startDate, endDate, settings
   if (bypassCache || isPeriodCacheDisabled()) return null;
   const versions = await fetchDataVersions();
   const key = painelCacheKey(startDate, endDate, versions.versionKey, settings);
-  const cached = getPeriodCacheEntry(key);
+  const cached = await getPeriodCacheEntry(key);
   return cached?.kpisFromSumario ?? null;
 }
 
@@ -198,14 +198,14 @@ export async function getPerformanceBundleCached(
   const perfKey = performanceCacheKey(startDate, endDate, versions.versionKey);
 
   if (!bypassCache) {
-    const cached = getPeriodCacheEntry(perfKey);
+    const cached = await getPeriodCacheEntry(perfKey);
     if (cached) {
       return { ...cached, _fromCache: true };
     }
   }
 
   const painelKey = painelCacheKey(startDate, endDate, versions.versionKey, settings);
-  const painelCached = !bypassCache ? getPeriodCacheEntry(painelKey) : null;
+  const painelCached = !bypassCache ? await getPeriodCacheEntry(painelKey) : null;
 
   if (painelCached?.kpisFromSumario && painelCached?.subIds) {
     let produtos = painelCached.produtosPeriodo || [];
@@ -241,7 +241,7 @@ export async function getModoAllPanelCached(settings = {}, { bypassCache = false
   const key = modoAllCacheKey(startDate, endDate, versions.versionKey, settings);
 
   if (!bypassCache) {
-    const cached = getPeriodCacheEntry(key);
+    const cached = await getPeriodCacheEntry(key);
     if (cached?.panelData) {
       return { panelData: cached.panelData, _fromCache: true };
     }

@@ -1,4 +1,4 @@
-/** Cache in-memory por aba — compartilhado entre Dashboard, Shopee e Performance na mesma sessão. */
+import { idbGet, idbSet, idbClear } from "./indexedDbCache";
 
 export const CACHE_DISABLE_KEY = "afilia:disable-cache";
 
@@ -22,22 +22,35 @@ export function buildPeriodCacheKey(kind, startDate, endDate, versionKey, settin
   return `${kind}|${startDate}|${endDate}|${versionKey}|${settingsCacheKey(settings)}`;
 }
 
-export function getPeriodCacheEntry(key) {
+export async function getPeriodCacheEntry(key) {
   if (isPeriodCacheDisabled()) return null;
-  const entry = store.get(key);
+  
+  let entry = store.get(key);
+  if (!entry) {
+    entry = await idbGet(key);
+    if (entry) {
+      store.set(key, entry);
+    }
+  }
+  
   if (!entry) return null;
   return entry.payload;
 }
 
 export function setPeriodCacheEntry(key, payload, meta = {}) {
   if (isPeriodCacheDisabled()) return;
-  store.set(key, {
+  
+  const entry = {
     payload,
     storedAt: Date.now(),
     ...meta,
-  });
+  };
+  
+  store.set(key, entry);
+  idbSet(key, entry).catch(() => {});
 }
 
 export function invalidatePeriodSessionCache() {
   store.clear();
+  idbClear().catch(() => {});
 }
