@@ -701,13 +701,9 @@ export async function getDatasDesatualizadas(startDate, endDate) {
 
 async function agregarKPIsDeSubIdDaily(startDate, endDate) {
   try {
-    const q = query(
-      collection(db, "subid_daily"),
-      where("data", ">=", startDate),
-      where("data", "<=", endDate),
-    );
-    const snapshot = await getDocs(q);
-    if (snapshot.empty) return null;
+    const { fetchSmartDailyCollection } = await import("../cache/dailyGranularCache.js");
+    const dataArray = await fetchSmartDailyCollection("subid_daily", startDate, endDate);
+    if (!dataArray || dataArray.length === 0) return null;
 
     const tot = {
       comissao_total: 0,
@@ -724,8 +720,8 @@ async function agregarKPIsDeSubIdDaily(startDate, endDate) {
     const porDia = {};
     const datasVistas = new Set();
 
-    snapshot.forEach((docSnap) => {
-      const d = docSnap.data() || {};
+    dataArray.forEach((d) => {
+      d = d || {};
       const data = d.data || startDate;
       datasVistas.add(data);
       tot.comissao_total += Number(d.comissoes || 0);
@@ -1187,23 +1183,14 @@ export async function fetchShopeeDailyDocsForRange(startDate, endDate) {
     return shopeeDailyQueryCache.get(cacheKey);
   }
 
-  const dailyRef = collection(db, "shopee_daily");
-  let docs = [];
-  if (startDate === endDate) {
-    const snapDoc = await getDoc(doc(db, "shopee_daily", startDate));
-    const docValido = snapDoc.exists() && !isDailyMetricsVazio(snapDoc.data());
-    if (docValido) {
-      docs = [snapDoc];
-    }
-  } else {
-    const q = query(
-      dailyRef,
-      where(documentId(), ">=", startDate),
-      where(documentId(), "<=", endDate),
-    );
-    const snap = await getDocs(q);
-    docs = snap.docs;
-  }
+  const { fetchSmartDailyCollection } = await import("../cache/dailyGranularCache.js");
+  const dataArray = await fetchSmartDailyCollection("shopee_daily", startDate, endDate);
+  
+  const docs = dataArray.map(d => ({
+    data: () => d,
+    exists: () => true
+  }));
+
   shopeeDailyQueryCache.set(cacheKey, docs);
   return docs;
 }
@@ -1489,15 +1476,12 @@ export async function montarBundleGranular(startStr, endStr, {
   settings = {},
   skipPin = false,
 } = {}) {
-  const subidSnap = await getDocs(query(
-    collection(db, "subid_daily"),
-    where("data", ">=", startStr),
-    where("data", "<=", endStr),
-  )).catch(() => ({ empty: true, forEach: () => {} }));
+  const { fetchSmartDailyCollection } = await import("../cache/dailyGranularCache.js");
+  const subidRows = await fetchSmartDailyCollection("subid_daily", startStr, endStr).catch(() => []);
 
   const subIdMap = {};
-  subidSnap.forEach((docSnap) => {
-    const d = docSnap.data() || {};
+  subidRows.forEach((row) => {
+    const d = row.data && typeof row.data === "function" ? row.data() : row;
     const raw = String(d.subid || "").trim();
     const subid = normalizeSubId(raw) || raw || "ORGANICO";
 
@@ -1861,13 +1845,10 @@ function mergeProdutoMensalSlice(produtoMap, mensalDoc, sliceStart, sliceEnd) {
 }
 
 async function fetchProdutoDailyRange(startStr, endStr) {
-  const snapshot = await getDocs(query(
-    collection(db, "produto_daily"),
-    where("data", ">=", startStr),
-    where("data", "<=", endStr),
-  ));
+  const { fetchSmartDailyCollection } = await import("../cache/dailyGranularCache.js");
+  const dataArray = await fetchSmartDailyCollection("produto_daily", startStr, endStr);
   const produtoMap = {};
-  snapshot.forEach((docSnap) => agregarProdutoDailyDoc(produtoMap, docSnap.data() || {}));
+  dataArray.forEach((data) => agregarProdutoDailyDoc(produtoMap, data || {}));
   return produtoMap;
 }
 

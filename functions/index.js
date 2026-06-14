@@ -3610,6 +3610,24 @@ async function touchMetaSyncHealth(patch) {
   }, { merge: true });
 }
 
+async function bumpDailyVersionsManifest(dates, prefix) {
+  if (!dates || dates.length === 0) return;
+  const now = Date.now();
+  const patch = {};
+  for (const d of dates) {
+    if (prefix === "shopee") {
+      patch[`shopee_daily_${d}`] = now;
+      patch[`subid_daily_${d}`] = now;
+      patch[`produto_daily_${d}`] = now;
+    } else if (prefix === "meta") {
+      patch[`meta_ads_daily_${d}`] = now;
+    }
+  }
+  await db.collection("sync_state").doc("daily_versions").set(patch, { merge: true }).catch(err => {
+    console.error("[bumpDailyVersionsManifest] erro ao atualizar manifesto diferencial:", err);
+  });
+}
+
 /** Dias corridos em BRT terminando em ontem (Meta Insights fecha o dia com atraso). */
 const META_DAILY_RECENT_DAYS = 7;
 
@@ -4797,6 +4815,7 @@ async function runShopeeSync({
       : resolvedDateFilter?.type === "today"
         ? [formatDateBRTYYYYMMDDNow()]
         : (dayMapKeys || []).slice().sort();
+    await bumpDailyVersionsManifest(diasRollup, "shopee");
     const reconcileRollup = /reconcile/i.test(String(label || ""));
     refreshMonthlyBucketsForDates(db, diasRollup, { reconcile: reconcileRollup })
       .then((r) => {
@@ -6816,6 +6835,11 @@ async function runMetaDailySync({ daysBack }) {
     lastDailySyncError: null,
     lastDailySyncFailedAt: null,
   }).catch(() => null);
+
+  if (totalGravados > 0) {
+    const dates = listBrtDatesInclusive(since, until);
+    await bumpDailyVersionsManifest(dates, "meta");
+  }
 
   return {
     range: { since, until, daysBack: days },
